@@ -1,4 +1,4 @@
-// UNVERIFIED: never compiled. Wires the shell only; all state comes from CompositionRoot.
+// Compiles with the .NET 8 SDK; not yet run on a Mac. Wires the shell only; all state comes from CompositionRoot.
 
 using Avalonia;
 using Avalonia.Controls.ApplicationLifetimes;

@@ -10,7 +10,7 @@ A cross-platform port of Cookie Jar. The Windows app in `../src` is untouched an
 | `src/CookieJar.Platform.Windows` | Windows implementations of the contracts (wraps the existing Win32 code). |
 | `src/CookieJar.Platform.Mac` | macOS implementations (libc, `open`, `security`, LaunchAgents, Accessibility/CGEvent). **Not run on a real Mac yet.** |
 | `src/CookieJar.AppModel` | View-models and launch orchestration, UI-framework free. |
-| `src/CookieJar.App` | Avalonia UI shell (needs the .NET 8 SDK; not built on this PC). |
+| `src/CookieJar.App` | Avalonia UI shell. Builds with the .NET 8 SDK (its own `global.json`); not yet run on a Mac. |
 | `tests/*` | One small console test project per library (shared `tests/Shared/MiniTest.cs`). |
 | `poc/` | Shell scripts to run on a Mac to answer "can several Roblox clients run side by side?" |
 | `docs/` | Architecture notes and status. |

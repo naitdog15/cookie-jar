@@ -1,4 +1,4 @@
-// UNVERIFIED: never compiled. The only place that constructs platform services; the App layer holds no logic.
+// Compiles with the .NET 8 SDK; not yet run on a Mac. The only place that constructs platform services; the App layer holds no logic.
 
 using System;
 using System.IO;

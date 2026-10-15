@@ -1,4 +1,4 @@
-// UNVERIFIED: never compiled. Avalonia entry point; the Windows Program.cs (WPF) is not used here.
+// Compiles with the .NET 8 SDK; not yet run on a Mac. Avalonia entry point; the Windows Program.cs (WPF) is not used here.
 
 using System;
 using Avalonia;

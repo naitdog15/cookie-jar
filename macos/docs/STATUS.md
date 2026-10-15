@@ -11,7 +11,7 @@ Verified on the Windows PC with `powershell -File macos\verify.ps1`: **VERIFY OK
 | CookieJar.Platform.Windows | yes | yes | 143 passed, 0 failed |
 | CookieJar.Platform.Mac | yes (compiles on Windows) | yes, logic and parsing only | 276 passed, 0 failed |
 | CookieJar.AppModel | yes | yes | 125 passed, 0 failed |
-| CookieJar.App (Avalonia) | **no** (needs .NET 8 SDK, only SDK 3.1 here) | no | not built |
+| CookieJar.App (Avalonia) | yes (.NET 8 SDK, from its own folder) | no | built, never started |
 | poc/*.sh | syntax only (`bash -n`) | **not run** (needs a Mac) | unverified |
 
 Nothing in Platform.Mac has run on a real Mac. Tests there cover pure logic (key maps, window-list parsing, command building) with fakes.

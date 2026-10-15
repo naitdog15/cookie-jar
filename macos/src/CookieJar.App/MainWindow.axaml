@@ -1,4 +1,4 @@
-<!-- UNVERIFIED: never compiled. Bindings are plain {Binding} (no x:DataType); names must match MainViewModel. -->
+<!-- Compiles with the .NET 8 SDK; not yet run on a Mac. Bindings are plain {Binding} (no x:DataType); names must match MainViewModel. -->
 <Window xmlns="https://github.com/avaloniaui"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         xmlns:core="clr-namespace:CookieJar.Core;assembly=CookieJar.Core"
@@ -81,7 +81,7 @@
           <TextBlock Text="Memory cap per instance" FontSize="15" FontWeight="Bold" Foreground="{DynamicResource Text}" />
           <Grid ColumnDefinitions="*,Auto">
             <!-- Position 0 is Auto (no cap); Steps is the highest capped position. -->
-            <Slider Grid.Column="0" Minimum="0" Maximum="{x:Static core:RamScale.Steps}"
+            <Slider x:Name="RamSlider" Grid.Column="0" Minimum="0"
                     TickFrequency="1" IsSnapToTickEnabled="True"
                     Value="{Binding RamIndex, Mode=TwoWay}" />
             <TextBlock Grid.Column="1" Text="{Binding RamLabel}" FontSize="13" Foreground="{DynamicResource Text}"

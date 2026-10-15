@@ -1,4 +1,4 @@
-<!-- UNVERIFIED: never compiled. Written on a PC with only the .NET SDK 3.1; needs the .NET 8 SDK and a Mac build. -->
+<!-- Compiles with the .NET 8 SDK (global.json in this folder picks it); not yet run on a Mac. -->
 <Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
     <OutputType>Exe</OutputType>

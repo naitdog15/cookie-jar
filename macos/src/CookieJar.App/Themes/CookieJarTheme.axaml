@@ -1,4 +1,4 @@
-<!-- UNVERIFIED: never compiled. Hex values copied by hand from src/Theme.cs Apply(); check against that file. -->
+<!-- Compiles with the .NET 8 SDK; not yet run on a Mac. Hex values copied by hand from src/Theme.cs Apply(); check against that file. -->
 <ResourceDictionary xmlns="https://github.com/avaloniaui"
                     xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
   <!-- Light is the default palette (Theme.Apply(false)); Dark matches Theme.Apply(true). Avalonia picks by the OS setting. -->

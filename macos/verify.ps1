@@ -1,6 +1,7 @@
 # Builds the macos/ projects and runs their tests (plain `dotnet`, SDK 3.1, no NuGet packages, works offline).
 #   .\verify.ps1                 everything that exists
-#   .\verify.ps1 -Only Core      only the Core library and Core tests (names: Platform, Core, Windows, Mac, AppModel)
+#   .\verify.ps1 -Only Core      only the Core library and Core tests (names: Platform, Core, Windows, Mac, AppModel, App)
+#   App is the Avalonia UI: it builds with the .NET 8 SDK from its own folder (its global.json) and is skipped if SDK 8 is missing.
 # Exit code 0 = every selected project built and every test passed.
 param([string[]]$Only = @())
 $ErrorActionPreference = 'Continue'
@@ -11,16 +12,21 @@ $map = @(
   @{ n = 'Core';      lib = 'CookieJar.Core';             tests = 'CookieJar.Core.Tests' },
   @{ n = 'Windows';   lib = 'CookieJar.Platform.Windows'; tests = 'CookieJar.Windows.Tests' },
   @{ n = 'Mac';       lib = 'CookieJar.Platform.Mac';     tests = 'CookieJar.Mac.Tests' },
-  @{ n = 'AppModel';  lib = 'CookieJar.AppModel';         tests = 'CookieJar.AppModel.Tests' }
+  @{ n = 'AppModel';  lib = 'CookieJar.AppModel';         tests = 'CookieJar.AppModel.Tests' },
+  @{ n = 'App';       lib = 'CookieJar.App';              tests = $null; sdk8 = $true }
 )
 $failed = @()
 foreach ($m in $map) {
   if ($Only.Count -gt 0 -and ($Only -notcontains $m.n)) { continue }
   $csproj = Join-Path $root "src\$($m.lib)\$($m.lib).csproj"
   if (-not (Test-Path $csproj)) { Write-Host "SKIP  $($m.n) (no project)"; continue }
+  if ($m.sdk8 -and -not ((& dotnet --list-sdks 2>$null) -match '^8\.')) { Write-Host "SKIP  $($m.n) (needs the .NET 8 SDK)"; continue }
   Write-Host "=== BUILD $($m.n) ==="
+  if ($m.sdk8) { Push-Location (Split-Path $csproj) }   # SDK 8 is picked by the global.json in the project folder
   $out = & dotnet build $csproj -nologo -v q -clp:"ErrorsOnly;NoSummary" 2>&1
-  if ($LASTEXITCODE -ne 0) { $out | Select-Object -First 40 | ForEach-Object { Write-Host $_ }; Write-Host "BUILD FAILED: $($m.n)"; $failed += "build:$($m.n)"; continue }
+  $buildCode = $LASTEXITCODE
+  if ($m.sdk8) { Pop-Location }
+  if ($buildCode -ne 0) { $out | Select-Object -First 40 | ForEach-Object { Write-Host $_ }; Write-Host "BUILD FAILED: $($m.n)"; $failed += "build:$($m.n)"; continue }
   Write-Host "BUILD OK: $($m.n)"
   if ($m.tests) {
     $tproj = Join-Path $root "tests\$($m.tests)\$($m.tests).csproj"
