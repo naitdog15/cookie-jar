@@ -79,12 +79,13 @@ namespace RbxMulti
         private const int MaxIntervalSeconds = 1800;
         private const int NudgeMinutes = 5;
         private const int DefaultCustomRamMb = 2048;
-        private const int MinCustomRamMb = 400;
+        private const int MinCustomRamMb = RamScale.MinMb;
         private const int MaxCustomRamMb = 65536;
         private const int MinLayoutWidth = 200;
         private const int MinLayoutHeight = 150;
         private const string SettingsFileName = "minibar.settings";
         private const string KeepAliveKey = "keepalive";
+        private const string EfficiencyKey = "bgefficiency";
         private const string MiniBarKey = "minibar";
 
         /// <summary>Set from the MainWindow(bool) constructor. Program.cs may read it.</summary>
@@ -124,6 +125,12 @@ namespace RbxMulti
         private bool _nudge;
         private bool _startHidden;
         private bool _keepAlive;
+        private bool _bgEfficiency = true;
+        private CheckBox _efficiencyCheck;
+        private readonly List<EfficiencyTarget> _effTargets = new List<EfficiencyTarget>();
+
+        /// <summary>Lowers CPU priority and turns on Windows efficiency mode for clients that are not in front.</summary>
+        internal readonly BackgroundEfficiency Efficiency = new BackgroundEfficiency();
         private bool _exiting;
         private bool _settingsSync;
         private MiniBar _miniBar;
@@ -204,8 +211,10 @@ namespace RbxMulti
             _monitor = new ResourceMonitor();
 
             LoadMiniBarSettings();
+            Efficiency.Enabled = _bgEfficiency;
 
             Content = BuildRoot();
+            Efficiency.Log = AppendLog;
 
             _manager.Log += AppendLogSafe;
             _manager.Instances.CollectionChanged += OnInstancesChanged;
@@ -691,6 +700,15 @@ namespace RbxMulti
             _autoStartCheck.Unchecked += OnAutoStartToggled;
             body.Children.Add(_autoStartCheck);
 
+            _efficiencyCheck = MakeCheck("Save CPU on background clients");
+            _efficiencyCheck.IsChecked = _bgEfficiency;
+            _efficiencyCheck.ToolTip = "Clients that are not the window in front run at lower CPU priority with Windows efficiency mode, "
+                + "so the game you are playing (or the rest of the PC) gets the CPU first. The client in front, and any client "
+                + "still starting up (first minute), always run at full speed. Everything returns to normal when you turn this off or exit.";
+            _efficiencyCheck.Checked += OnEfficiencyToggled;
+            _efficiencyCheck.Unchecked += OnEfficiencyToggled;
+            body.Children.Add(_efficiencyCheck);
+
             body.Children.Add(Track(UiUtil.Label("Closing or minimising this window hides it in the tray. Use Exit (top right) or the tray menu to quit.", 12, false, Theme.TextMuted), true));
 
             _settingsExpander = new Expander();
@@ -765,6 +783,7 @@ namespace RbxMulti
                 // Refresh errors must never stop the timer.
             }
 
+            UpdateEfficiency();
             SampleMonitor();
             if (_tray != null) { _tray.SetRunning(_manager.RunningCount); }
             RefreshButtons();   // also keeps ActiveProfile current for the mini bar and instance mapping
@@ -785,6 +804,29 @@ namespace RbxMulti
         {
             if (!IsVisible) return;
             try { RefreshVisuals(); } catch (Exception) { }
+        }
+
+        /// <summary>One foreground check per tick; Windows is only called when a client's wanted state changes.</summary>
+        private void UpdateEfficiency()
+        {
+            if (!Efficiency.Enabled) return;
+            try
+            {
+                _effTargets.Clear();
+                foreach (RobloxInstance inst in _manager.Instances)
+                {
+                    EfficiencyTarget t = new EfficiencyTarget();
+                    t.Pid = inst.Pid;
+                    t.Running = inst.StatusKind == "Running";
+                    t.StartedUtc = inst.StartedUtc;
+                    _effTargets.Add(t);
+                }
+                Efficiency.Update(_effTargets, DateTime.UtcNow);
+            }
+            catch (Exception)
+            {
+                // Efficiency is an extra; it must never stop the refresh.
+            }
         }
 
         private void SampleMonitor()
@@ -1884,6 +1926,20 @@ namespace RbxMulti
             });
         }
 
+        private void OnEfficiencyToggled(object sender, RoutedEventArgs e)
+        {
+            if (_settingsSync)
+            {
+                return;
+            }
+            _bgEfficiency = _efficiencyCheck.IsChecked == true;
+            Efficiency.Enabled = _bgEfficiency;   // turning it off restores every client at once
+            SaveMiniBarSettings();
+            AppendLog(_bgEfficiency
+                ? "Background clients now run at lower CPU priority (the client in front stays at full speed)."
+                : "Background CPU saving is off; all clients are back at normal priority.");
+        }
+
         private void OnKeepAliveToggled(object sender, RoutedEventArgs e)
         {
             if (_settingsSync)
@@ -2325,7 +2381,7 @@ namespace RbxMulti
             private readonly Button _removeButton;
             private readonly Button _relaunchButton;
             private readonly Button _layoutButton;
-            private readonly ComboBox _ramCombo;
+            private readonly RamSlider _ramSlider;
             private readonly ToggleSwitch _auto;
             private readonly TeleportCardRow _teleportRow;
             private readonly CashOutCardRow _cashRow;
@@ -2337,6 +2393,7 @@ namespace RbxMulti
             private readonly WrapPanel _footer;
             private readonly Border _divider;
             private bool _busy;
+            private bool _shownThrottled;
             private bool _suppress;
             private int _lastPid = -1;
 
@@ -2420,20 +2477,9 @@ namespace RbxMulti
 
                 _ramLabel = UiUtil.Label("RAM limit", 12, false, Theme.TextMuted);
                 _ramLabel.VerticalAlignment = VerticalAlignment.Center;
-                _ramCombo = new ComboBox();
-                _ramCombo.Items.Add(RamNone);
-                _ramCombo.Items.Add(LaunchProfile.RamLow);
-                _ramCombo.Items.Add(LaunchProfile.RamMedium);
-                _ramCombo.Items.Add(LaunchProfile.RamHigh);
-                _ramCombo.Items.Add(LaunchProfile.RamCustom);
-                _ramCombo.Width = 130;
-                _ramCombo.Height = 30;
-                _ramCombo.VerticalContentAlignment = VerticalAlignment.Center;
-                _ramCombo.Margin = new Thickness(8, 0, 0, 0);
-                _ramCombo.ToolTip = "Memory cap for this instance (working-set trim, not a hard limit). Low about 1.2 GB, Medium 2 GB, High 3.5 GB; scaled down when many instances run. Custom MB is set under Advanced.";
-                AutomationProperties.SetName(_ramCombo, "RAM limit for " + instance.Name);
-                ThemedCombo.Apply(_ramCombo);
-                _ramCombo.SelectionChanged += OnRamChanged;
+                _ramSlider = new RamSlider("RAM limit for " + instance.Name);
+                _ramSlider.Margin = new Thickness(8, 0, 0, 0);
+                _ramSlider.Committed += OnRamCommitted;
 
                 StackPanel ramRow = new StackPanel();
                 ramRow.Orientation = Orientation.Horizontal;
@@ -2441,7 +2487,7 @@ namespace RbxMulti
                 ramRow.VerticalAlignment = VerticalAlignment.Top;
                 ramRow.MinHeight = 34;   // line up with the Teleport row, not its result chip
                 ramRow.Children.Add(_ramLabel);
-                ramRow.Children.Add(_ramCombo);
+                ramRow.Children.Add(_ramSlider);
 
                 _auto = new ToggleSwitch();
                 _auto.IsChecked = false;
@@ -2568,7 +2614,9 @@ namespace RbxMulti
 
             public void RefreshStats()
             {
-                SyncRamCombo();
+                SyncRam();
+                // The detail line normally follows memory/uptime changes; redraw it at once when the background state flips.
+                if (_owner.Efficiency.IsThrottled(_instance.Pid) != _shownThrottled) RefreshDetails();
                 if (_owner.Clicker == null)
                 {
                     return;
@@ -2640,7 +2688,7 @@ namespace RbxMulti
                 _ramLabel.Foreground = Theme.TextMuted;
                 _error.Foreground = Theme.Warning;
                 _divider.Background = Theme.Border;
-                ThemedCombo.Apply(_ramCombo);
+                _ramSlider.ApplyTheme();
                 _teleportRow.ApplyTheme();
                 _cashRow.ApplyTheme();
             }
@@ -2650,43 +2698,29 @@ namespace RbxMulti
                 _instance.PropertyChanged -= OnInstancePropertyChanged;
             }
 
-            private void OnRamChanged(object sender, SelectionChangedEventArgs e)
+            /// <summary>The slider settled on a value: 0 = Auto (no cap), otherwise a cap in MB.</summary>
+            private void OnRamCommitted(int mb)
             {
-                if (_suppress || _ramCombo.SelectedItem == null)
+                if (mb <= 0)
                 {
-                    return;
+                    _owner.SetInstanceRam(_instance, MemoryPreset.Unlimited, 0);
                 }
-                MemoryPreset preset = PresetFor(_ramCombo.SelectedItem.ToString());
-                int custom = 0;
-                if (preset == MemoryPreset.Custom)
+                else
                 {
-                    RamSetting current = _owner.GetRam(_instance);
-                    custom = current != null && current.CustomMb > 0 ? current.CustomMb : DefaultCustomRamMb;
-                    _owner.OpenAdvanced();
+                    _owner.SetInstanceRam(_instance, MemoryPreset.Custom, mb);
                 }
-                _owner.SetInstanceRam(_instance, preset, custom);
             }
 
-            /// <summary>Keeps the dropdown showing what is really in force (the setting can change from the profile rows or the Advanced panel).</summary>
-            public void SyncRamCombo()
+            /// <summary>Keeps the slider showing what is really in force (the setting can change from the profile rows or the Advanced panel).</summary>
+            public void SyncRam()
             {
-                if (_ramCombo.IsDropDownOpen)
-                {
-                    return;
-                }
                 RamSetting setting = _owner.GetRam(_instance);
-                string want = LabelFromPreset(setting != null ? setting.Preset : MemoryPreset.Unlimited);
-                if (!string.Equals(_ramCombo.SelectedItem as string, want, StringComparison.Ordinal))
+                int mb = 0;
+                if (setting != null && setting.Preset != MemoryPreset.Unlimited)
                 {
-                    _suppress = true;
-                    try { _ramCombo.SelectedItem = want; }
-                    finally { _suppress = false; }
+                    mb = MemoryGovernor.ResolveMb(setting.Preset, setting.CustomMb);
                 }
-            }
-
-            private static MemoryPreset PresetFor(string label)
-            {
-                return PresetFromLabel(label);
+                _ramSlider.SetMb(mb);
             }
 
             private void OnAutoChanged(object sender, RoutedEventArgs e)
@@ -2717,6 +2751,7 @@ namespace RbxMulti
 
             private void RefreshDetails()
             {
+                _shownThrottled = _owner.Efficiency.IsThrottled(_instance.Pid);
                 string login = string.IsNullOrEmpty(_instance.AccountName)
                     ? "Website login"
                     : "Stored account" + (string.IsNullOrEmpty(_instance.ProfileName) ? "" : "  ·  Profile " + _instance.ProfileName);
@@ -2725,6 +2760,7 @@ namespace RbxMulti
                     + login
                     + (_instance.IsAdopted ? "  ·  Adopted" : "")
                     + (isStopped ? "" : "  ·  " + UiUtil.FormatMb(_instance.MemoryMb) + "  ·  Up " + Text(_instance.Uptime, "0s"))
+                    + (!isStopped && _owner.Efficiency.IsThrottled(_instance.Pid) ? "  ·  Background (lower CPU priority)" : "")
                     + "  ·  PID " + _instance.Pid.ToString(CultureInfo.InvariantCulture);
                 if (details != _details.Text) _details.Text = details;
             }
@@ -2767,8 +2803,8 @@ namespace RbxMulti
                 _relaunchButton.Visibility = relaunchAccount != null ? Visibility.Visible : Visibility.Collapsed;
                 _relaunchButton.IsEnabled = !_busy && _owner.CanLaunchSingle(relaunchAccount);
 
-                // Keep the RAM combo in step with what is in force for this instance.
-                SyncRamCombo();
+                // Keep the RAM slider in step with what is in force for this instance.
+                SyncRam();
 
                 // A relaunch changes the PID; the clicker needs the new one.
                 if (_instance.Pid != _lastPid)
@@ -2890,6 +2926,7 @@ namespace RbxMulti
                 if (_miniBarCheck != null) { _miniBarCheck.Foreground = Theme.Text; }
                 if (_autoStartCheck != null) { _autoStartCheck.Foreground = Theme.Text; }
                 if (_keepAliveCheck != null) { _keepAliveCheck.Foreground = Theme.Text; }
+                if (_efficiencyCheck != null) { _efficiencyCheck.Foreground = Theme.Text; }
                 if (_intervalBox != null) { _intervalBox.Foreground = Theme.Text; _intervalBox.Background = Theme.SurfaceAlt; _intervalBox.BorderBrush = Theme.Border; }
                 if (_logBox != null) { _logBox.Background = Theme.SurfaceAlt; _logBox.Foreground = Theme.Text; }
                 if (_capacityBar != null) { _capacityBar.ApplyTheme(); _cpuBar.ApplyTheme(); _ramBar.ApplyTheme(); }
@@ -3076,6 +3113,7 @@ namespace RbxMulti
             CloseMiniBar();
             if (_tray != null) { _tray.Dispose(); _tray = null; }
             try { MemoryGovernor.ClearAll(); } catch { }
+            try { Efficiency.RestoreAll(); } catch { }
 
             _manager.Log -= AppendLogSafe;
             _manager.Instances.CollectionChanged -= OnInstancesChanged;
@@ -3156,6 +3194,10 @@ namespace RbxMulti
                     {
                         _keepAlive = on;
                     }
+                    else if (key == EfficiencyKey)
+                    {
+                        _bgEfficiency = on;
+                    }
                     else if (key == "traytip")
                     {
                         _trayTipShown = on;
@@ -3189,6 +3231,7 @@ namespace RbxMulti
                 List<string> lineList = new List<string>();
                 lineList.Add(KeepAliveKey + "=" + (_keepAlive ? "true" : "false"));
                 lineList.Add(MiniBarKey + "=" + (_miniBar != null ? "true" : "false"));
+                lineList.Add(EfficiencyKey + "=" + (_bgEfficiency ? "true" : "false"));
                 lineList.Add("traytip=" + (_trayTipShown ? "true" : "false"));
                 lineList.AddRange(InputSettingLines());
                 string[] lines = lineList.ToArray();

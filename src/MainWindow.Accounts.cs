@@ -39,7 +39,6 @@ namespace RbxMulti
     /// <summary>Profiles, stored accounts and the manual (website login) launch controls.</summary>
     public partial class MainWindow
     {
-        private static readonly string[] RamPresetChoices = new string[] { LaunchProfile.RamLow, LaunchProfile.RamMedium, LaunchProfile.RamHigh };
 
         private ComboBox _profileBox;
         private TextBlock _profileHint;
@@ -1127,17 +1126,22 @@ namespace RbxMulti
             }
         }
 
-        private void OnRamPresetChanged(Account account, ComboBox box)
+        /// <summary>The RAM slider of an account row settled: 0 = Auto (no cap), otherwise a cap in MB saved to the profile.</summary>
+        private void OnAccountRamCommitted(Account account, int mb)
         {
-            if (_profileRunning || box == null) return;
-            string picked = box.SelectedItem as string;
+            if (_profileRunning) return;
             LaunchProfile p = ActiveProfile;
-            if (picked == null || p == null) return;
-            string now = p.HasRamPreset(account.Id) ? p.GetRamPreset(account.Id) : RamNone;
-            if (string.Equals(now, picked, StringComparison.OrdinalIgnoreCase)) return;
+            if (p == null) return;
+            int now = p.HasRamPreset(account.Id) ? p.ResolveRamMb(account.Id) : 0;
+            if (RamScale.IndexFromMb(now) == RamScale.IndexFromMb(mb)) return;
 
-            if (picked == RamNone) p.ClearRamPreset(account.Id);
-            else p.SetRamPreset(account.Id, picked);
+            string picked = RamScale.Label(mb);
+            if (mb <= 0) p.ClearRamPreset(account.Id);
+            else
+            {
+                p.SetRamPreset(account.Id, LaunchProfile.RamCustom);
+                p.SetCustomRamMb(account.Id, mb);
+            }
             string error;
             if (!ProfileStore.SaveLayouts(p.Name, p, out error))
             {
@@ -1190,26 +1194,11 @@ namespace RbxMulti
                 LaunchProfile ap = ActiveProfile;
                 if (ap != null && ap.AccountIds.Contains(a.Id))
                 {
-                    string current = ap.HasRamPreset(a.Id) ? ap.GetRamPreset(a.Id) : RamNone;
-                    List<string> choices = new List<string>();
-                    choices.Add(RamNone);
-                    choices.AddRange(RamPresetChoices);
-                    if (!choices.Contains(current)) choices.Add(current);
-
-                    ComboBox ram = new ComboBox();
-                    ram.ItemsSource = choices;
-                    ram.MinWidth = 110;
-                    ram.Height = 30;
-                    ram.VerticalContentAlignment = VerticalAlignment.Center;
-                    ram.VerticalAlignment = VerticalAlignment.Center;
+                    RamSlider ram = new RamSlider("RAM limit for " + a.DisplayName + " in this profile");
                     ram.Margin = new Thickness(0, 0, 8, 6);
-                    ram.TabIndex = 30;
                     ram.IsEnabled = !_profileRunning;
-                    ram.ToolTip = "RAM limit for this account in the active profile (working-set trim). Low about 1.2 GB, Medium 2 GB, High 3.5 GB, scaled down when many instances run.";
-                    AutomationProperties.SetName(ram, "RAM preset for " + a.DisplayName);
-                    ThemedCombo.Apply(ram);
-                    ram.SelectedItem = current;
-                    ram.SelectionChanged += delegate { OnRamPresetChanged(a, ram); };
+                    ram.SetMb(ap.HasRamPreset(a.Id) ? ap.ResolveRamMb(a.Id) : 0);
+                    ram.Committed += delegate(int mb) { OnAccountRamCommitted(a, mb); };
                     buttons.Children.Add(ram);
                 }
 

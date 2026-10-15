@@ -615,6 +615,9 @@ namespace RbxMulti
             Put(r, "ThCbHover", Theme.AccentSoft);
             Put(r, "ThScrollTrack", Theme.SurfaceAlt);
             Put(r, "ThScrollThumb", Theme.ScrollThumb);
+            Put(r, "ThSlTrack", Theme.Border);
+            Put(r, "ThSlFill", Theme.Accent);
+            Put(r, "ThSlThumb", Theme.Surface);
         }
 
         private static void Put(ResourceDictionary r, string key, SolidColorBrush source)
@@ -622,6 +625,140 @@ namespace RbxMulti
             SolidColorBrush copy = new SolidColorBrush(source.Color);
             copy.Freeze();
             r[key] = copy;
+        }
+    }
+
+    /// <summary>
+    /// RAM limit slider: position 0 is Auto (no cap), then 128 MB to 3 GB in 64 MB steps (see RamScale). Shows the
+    /// value next to the track (amber below the "likely to stutter" line). Committed fires about 350 ms after the
+    /// last change, so dragging does not apply a cap or save the profile on every step.
+    /// </summary>
+    public sealed class RamSlider : StackPanel
+    {
+        private const string SliderXaml =
+            "<ControlTemplate xmlns='http://schemas.microsoft.com/winfx/2006/xaml/presentation' " +
+            "xmlns:x='http://schemas.microsoft.com/winfx/2006/xaml' TargetType='Slider'>" +
+            "<Grid x:Name='root' Height='26' Background='Transparent' SnapsToDevicePixels='True'>" +
+            "<Border x:Name='focusRing' CornerRadius='7' BorderThickness='1' BorderBrush='{DynamicResource ThSlFill}' Visibility='Collapsed' IsHitTestVisible='False'/>" +
+            "<Border Height='4' Margin='8,0' CornerRadius='2' Background='{DynamicResource ThSlTrack}' VerticalAlignment='Center'/>" +
+            "<Track x:Name='PART_Track'>" +
+            "<Track.DecreaseRepeatButton><RepeatButton Command='Slider.DecreaseLarge' Focusable='False' IsTabStop='False'>" +
+            "<RepeatButton.Template><ControlTemplate TargetType='RepeatButton'><Border Height='4' Margin='8,0,0,0' CornerRadius='2,0,0,2' Background='{DynamicResource ThSlFill}' VerticalAlignment='Center'/></ControlTemplate></RepeatButton.Template>" +
+            "</RepeatButton></Track.DecreaseRepeatButton>" +
+            "<Track.IncreaseRepeatButton><RepeatButton Command='Slider.IncreaseLarge' Focusable='False' IsTabStop='False'>" +
+            "<RepeatButton.Template><ControlTemplate TargetType='RepeatButton'><Border Background='Transparent' Height='26'/></ControlTemplate></RepeatButton.Template>" +
+            "</RepeatButton></Track.IncreaseRepeatButton>" +
+            "<Track.Thumb><Thumb Width='16' Height='16' Focusable='False'>" +
+            "<Thumb.Template><ControlTemplate TargetType='Thumb'>" +
+            "<Border x:Name='knob' Width='16' Height='16' CornerRadius='8' Background='{DynamicResource ThSlThumb}' BorderBrush='{DynamicResource ThSlFill}' BorderThickness='2'/>" +
+            "<ControlTemplate.Triggers>" +
+            "<Trigger Property='IsMouseOver' Value='True'><Setter TargetName='knob' Property='BorderThickness' Value='4'/></Trigger>" +
+            "<Trigger Property='IsDragging' Value='True'><Setter TargetName='knob' Property='BorderThickness' Value='5'/></Trigger>" +
+            "</ControlTemplate.Triggers></ControlTemplate></Thumb.Template></Thumb></Track.Thumb>" +
+            "</Track></Grid>" +
+            "<ControlTemplate.Triggers>" +
+            "<Trigger Property='IsKeyboardFocused' Value='True'><Setter TargetName='focusRing' Property='Visibility' Value='Visible'/></Trigger>" +
+            "<Trigger Property='IsEnabled' Value='False'><Setter TargetName='root' Property='Opacity' Value='0.45'/></Trigger>" +
+            "</ControlTemplate.Triggers></ControlTemplate>";
+
+        // Parsed once and shared: the template only uses DynamicResource brushes.
+        private static ControlTemplate _template;
+
+        private readonly Slider _slider = new Slider();
+        private readonly TextBlock _label;
+        private readonly System.Windows.Threading.DispatcherTimer _commit;
+        private bool _quiet;
+
+        /// <summary>Raised after the user settles on a value: MB, or 0 for Auto.</summary>
+        public event Action<int> Committed;
+
+        public RamSlider(string automationName)
+        {
+            if (_template == null)
+            {
+                _template = (ControlTemplate)System.Windows.Markup.XamlReader.Parse(SliderXaml);
+                _template.Seal();
+            }
+            Orientation = Orientation.Horizontal;
+            VerticalAlignment = VerticalAlignment.Center;
+
+            _slider.Minimum = 0;
+            _slider.Maximum = RamScale.Steps;
+            _slider.SmallChange = 1;
+            _slider.LargeChange = 4;
+            _slider.TickFrequency = 1;
+            _slider.IsSnapToTickEnabled = true;
+            _slider.Width = 150;
+            _slider.VerticalAlignment = VerticalAlignment.Center;
+            _slider.FocusVisualStyle = null;
+            _slider.Template = _template;
+            System.Windows.Automation.AutomationProperties.SetName(_slider, automationName);
+
+            _label = UiUtil.Label("Auto", 12, true, Theme.Text);
+            _label.MinWidth = 62;
+            _label.Margin = new Thickness(8, 0, 0, 0);
+
+            Children.Add(_slider);
+            Children.Add(_label);
+            ToolTip = "Memory cap for this client: Auto (no cap) or 128 MB to 3 GB. It trims the RAM Windows keeps for the game " +
+                "(a working-set limit, not a hard memory limit), so a low value frees RAM but can make the game stutter.";
+            ToolTipService.SetShowOnDisabled(this, true);
+
+            _commit = new System.Windows.Threading.DispatcherTimer();
+            _commit.Interval = TimeSpan.FromMilliseconds(350);
+            _commit.Tick += delegate
+            {
+                _commit.Stop();
+                Action<int> h = Committed;
+                if (h != null) h(Mb);
+            };
+            _slider.ValueChanged += delegate
+            {
+                UpdateLabel();
+                if (_quiet) return;
+                _commit.Stop();
+                _commit.Start();
+            };
+            UpdateLabel();
+        }
+
+        /// <summary>Selected cap in MB; 0 means Auto.</summary>
+        public int Mb
+        {
+            get { return RamScale.MbFromIndex((int)Math.Round(_slider.Value)); }
+        }
+
+        /// <summary>True while the user is dragging or a change is waiting to be committed; outside updates should wait.</summary>
+        public bool IsBusy
+        {
+            get { return _slider.IsMouseCaptureWithin || _commit.IsEnabled; }
+        }
+
+        /// <summary>Shows mb (0 = Auto) without raising Committed. Ignored while the user is changing it.</summary>
+        public void SetMb(int mb)
+        {
+            if (IsBusy) return;
+            int index = RamScale.IndexFromMb(mb);
+            if ((int)Math.Round(_slider.Value) == index) return;
+            _quiet = true;
+            try { _slider.Value = index; }
+            finally { _quiet = false; }
+            UpdateLabel();
+        }
+
+        /// <summary>Re-reads the label colour after a theme change (the track uses DynamicResource brushes).</summary>
+        public void ApplyTheme()
+        {
+            UpdateLabel();
+        }
+
+        private void UpdateLabel()
+        {
+            int mb = Mb;
+            string text = RamScale.Label(mb);
+            if (_label.Text != text) _label.Text = text;
+            Brush want = (mb > 0 && mb < MemoryGovernor.MinSafeMb) ? (Brush)Theme.Warning : Theme.Text;
+            if (!ReferenceEquals(_label.Foreground, want)) _label.Foreground = want;
         }
     }
 

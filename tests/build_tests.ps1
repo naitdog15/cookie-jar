@@ -7,7 +7,7 @@ $bin  = if ($OutDir) { $OutDir } else { Join-Path $root 'tests\out' }
 New-Item -ItemType Directory -Force $bin | Out-Null
 $out = Join-Path $bin 'TeleportTests.exe'
 $src = Join-Path $root 'src'
-$files = @('CashOutDetector.cs','AntiIdleClicker.cs','RobloxInstance.cs','TeleportOcr.cs','TeleportDetector.cs','TeleportService.cs','InputSim.cs','InputDiagnostics.cs','KeepAlive.cs','CashOutManual.cs','ColourBlobs.cs','InviteDetector.cs','HospitalDetector.cs','HospitalRoute.cs') | ForEach-Object { Join-Path $src $_ }
+$files = @('CashOutDetector.cs','AntiIdleClicker.cs','RobloxInstance.cs','TeleportOcr.cs','TeleportDetector.cs','TeleportService.cs','InputSim.cs','InputDiagnostics.cs','KeepAlive.cs','CashOutManual.cs','ColourBlobs.cs','InviteDetector.cs','HospitalDetector.cs','HospitalRoute.cs','RamScale.cs','BackgroundEfficiency.cs') | ForEach-Object { Join-Path $src $_ }
 $files += (Join-Path $root 'tests\TeleportTests.cs')
 $files += (Join-Path $root 'tests\InputTests.cs')
 $files += (Join-Path $root 'tests\ThemeLoadTests.cs')
@@ -20,6 +20,7 @@ $files += (Join-Path $root 'tests\RequestOrderTests.cs')
 $files += (Join-Path $root 'tests\AimSimTests.cs')
 $files += (Join-Path $root 'tests\RouteDragTests.cs')
 $files += (Join-Path $root 'tests\SwitchTests.cs')
+$files += (Join-Path $root 'tests\BackgroundTests.cs')
 $a = @('/nologo','/target:exe','/platform:x64','/optimize+','/main:RbxMulti.TeleportTests',"/out:$out",
   '/r:System.dll','/r:System.Core.dll','/r:System.Drawing.dll','/r:System.Windows.Forms.dll','/r:Microsoft.CSharp.dll') + $files
 & $csc @a

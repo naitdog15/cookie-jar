@@ -93,6 +93,7 @@ namespace RbxMulti
             if (which == "all" || which == "aimsim") AimSimTests.Run(_dir, Check, Info);
             if (which == "all" || which == "routedrag") RouteDragTests.Run(_dir, Check, Info);
             if (which == "all" || which == "switch") SwitchTests.Run(_dir, Check, Info);
+            if (which == "all" || which == "background") BackgroundTests.Run(_dir, Check, Info);
             Console.WriteLine();
             try { Directory.Delete(evRoot, true); } catch (Exception) { }
             Console.WriteLine("RESULT: " + _pass + " passed, " + _fail + " failed");

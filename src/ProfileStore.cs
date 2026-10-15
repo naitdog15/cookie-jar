@@ -63,7 +63,7 @@ namespace RbxMulti
         public const string RamMedium = "Medium";
         public const string RamHigh = "High";
         public const string RamCustom = "Custom";
-        public const int MinCustomRamMb = 256;
+        public const int MinCustomRamMb = 128;
         public const int MaxCustomRamMb = 65536;
 
         public string Name;

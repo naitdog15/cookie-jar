@@ -101,7 +101,7 @@ namespace RbxMulti
 		public const int MinSafeMb = 800;
 		public const int ReapplySeconds = 5;
 
-		private const int CustomMinMb = 400;
+		private const int CustomMinMb = 128;
 		private const int CustomMaxMb = 65536;
 		private const int MinWorkingSetMb = 50;
 		private const int ScaledFloorMb = 600;

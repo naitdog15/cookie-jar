@@ -322,6 +322,8 @@ namespace RbxMulti
             Theme.Apply(false);
             MainWindow.SkipAdoption = true;
             MainWindow win = new MainWindow();
+            int ownPid = System.Diagnostics.Process.GetCurrentProcess().Id;
+            win.Efficiency.ForegroundPid = delegate { return ownPid; };   // the fake instances all use this process: never throttle the test host
             win.Left = -5000; win.Top = 0;
             win.Show();
             Pump(500);
@@ -385,6 +387,82 @@ namespace RbxMulti
                 Check("leak: theme label lists do not grow when instances come and go", after == before, before + " -> " + after);
             }
 
+            // ------------------------------------------------------------------ RAM slider on the instance cards
+            {
+                List<RamSlider> sliders = new List<RamSlider>();
+                CollectSliders(list, sliders);
+                Check("RAM slider: one on every instance card (no dropdown any more)", sliders.Count == 3, "count=" + sliders.Count);
+                RamSlider s1 = sliders[0];
+                Slider track = (Slider)Fld(s1, "_slider");
+                TextBlock lbl = (TextBlock)Fld(s1, "_label");
+                Check("RAM slider: default is Auto, range 0.." + RamScale.Steps, s1.Mb == 0 && lbl.Text == "Auto" && track.Minimum == 0 && track.Maximum == RamScale.Steps, lbl.Text);
+
+                MethodInfo getRam = typeof(MainWindow).GetMethod("GetRam", BindingFlags.NonPublic | BindingFlags.Instance);
+                Func<RobloxInstance, string> ramOf = delegate(RobloxInstance i)
+                {
+                    object st = getRam.Invoke(win, new object[] { i });
+                    if (st == null) return "none";
+                    return st.GetType().GetField("Preset").GetValue(st) + "/" + st.GetType().GetField("CustomMb").GetValue(st);
+                };
+
+                // dragging through several values commits once, after the last one
+                int commits = 0;
+                s1.Committed += delegate(int committedMb) { commits++; };
+                track.Value = RamScale.IndexFromMb(512);
+                track.Value = RamScale.IndexFromMb(768);
+                track.Value = RamScale.IndexFromMb(1024);
+                Check("RAM slider: nothing is committed while the value is still changing", commits == 0 && ramOf(m1) == "none", "commits=" + commits + " ram=" + ramOf(m1));
+                Settle(s1);
+                Check("RAM slider: one commit after settling, as a 1024 MB custom cap", commits == 1 && ramOf(m1) == "Custom/1024", "commits=" + commits + " ram=" + ramOf(m1));
+                Check("RAM slider: label reads 1 GB", lbl.Text == "1 GB", lbl.Text);
+                Check("RAM slider: a cap of 1 GB is shown in the normal text colour", ReferenceEquals(lbl.Foreground, Theme.Text), "");
+
+                track.Value = RamScale.IndexFromMb(640);
+                Settle(s1);
+                Check("RAM slider: 640 MB (under the 800 MB stutter line) shows the amber warning colour", ramOf(m1) == "Custom/640" && ReferenceEquals(lbl.Foreground, Theme.Warning), ramOf(m1));
+                { StackPanel one = new StackPanel(); RamSlider copy = new RamSlider("preview"); copy.SetMb(640); StackPanel row2 = new StackPanel(); row2.Orientation = Orientation.Horizontal; row2.Margin = new Thickness(20); row2.Background = Theme.Surface; row2.Children.Add(copy); RamSlider copy2 = new RamSlider("preview2"); copy2.Margin = new Thickness(30, 0, 0, 0); copy2.SetMb(2048); row2.Children.Add(copy2); RamSlider copy3 = new RamSlider("preview3"); copy3.Margin = new Thickness(30, 0, 0, 0); copy3.SetMb(3072); row2.Children.Add(copy3); Window pw = new Window(); pw.Left = -5000; pw.Width = 900; pw.Height = 100; pw.WindowStyle = WindowStyle.None; pw.ShowInTaskbar = false; pw.Background = Theme.Surface; pw.Content = row2; ThemedPopups.Install(pw.Resources); pw.Show(); Pump(200); Save(row2, 800, 70, "ram_slider_values.png"); pw.Close(); }
+
+                track.Value = 0;
+                Settle(s1);
+                Check("RAM slider: back to Auto clears the cap", ramOf(m1) == "Unlimited/0" && lbl.Text == "Auto", ramOf(m1) + " / " + lbl.Text);
+
+                // the card follows a change made elsewhere (Advanced box / profile), without raising Committed
+                int before2 = commits;
+                MethodInfo setRam = typeof(MainWindow).GetMethod("SetInstanceRam", BindingFlags.NonPublic | BindingFlags.Instance);
+                setRam.Invoke(win, new object[] { m1, MemoryPreset.Custom, 2048 });
+                TickNow(win);
+                Check("RAM slider: follows a cap set from elsewhere (2 GB) without committing again", s1.Mb == 2048 && lbl.Text == "2 GB" && commits == before2, s1.Mb + " / " + lbl.Text + " commits=" + commits);
+                setRam.Invoke(win, new object[] { m1, MemoryPreset.Unlimited, 0 });
+                TickNow(win);
+                Check("RAM slider: and returns to Auto when the cap is removed", s1.Mb == 0, "mb=" + s1.Mb);
+
+                // old presets show their real MB
+                setRam.Invoke(win, new object[] { m1, MemoryPreset.Low, 0 });
+                TickNow(win);
+                Check("RAM slider: an old 'Low' preset shows the MB that is really applied", s1.Mb == RamScale.MbFromIndex(RamScale.IndexFromMb(MemoryGovernor.ResolveMb(MemoryPreset.Low, 0))) && s1.Mb > 0, "mb=" + s1.Mb);
+                setRam.Invoke(win, new object[] { m1, MemoryPreset.Unlimited, 0 });
+                TickNow(win);
+                MemoryGovernor.ClearAll();
+
+                // theme switch keeps the label legible
+                Theme.Apply(true); Pump(200); Theme.Apply(false); Pump(200);
+                Check("RAM slider: still renders after theme toggles", s1.Mb == 0 && lbl.Text == "Auto", "");
+            }
+
+            // ------------------------------------------------------------------ background efficiency shown on the card
+            {
+                MethodInfo refresh = typeof(MainWindow).GetMethod("OnTimerTick", BindingFlags.NonPublic | BindingFlags.Instance);
+                win.Efficiency.ForegroundPid = delegate { return 0; };
+                TickNow(win);
+                string t1 = AllText(list);
+                Check("efficiency: a background client's card says so", t1.Contains("Background (lower CPU priority)") && win.Efficiency.IsThrottled(ownPid), win.Efficiency.ThrottledCount + " throttled");
+                win.Efficiency.ForegroundPid = delegate { return ownPid; };
+                TickNow(win);
+                Check("efficiency: the client in front is back at full speed and the note is gone", !AllText(list).Contains("Background (lower CPU priority)") && !win.Efficiency.IsThrottled(ownPid), "");
+                win.Efficiency.Enabled = false;
+                win.Efficiency.Enabled = true;
+            }
+
             // ------------------------------------------------------------------ Cash out card button, chips and history
             {
                 MethodInfo rec = typeof(MainWindow).GetMethod("RecordCashOut", BindingFlags.NonPublic | BindingFlags.Instance);
@@ -396,7 +474,7 @@ namespace RbxMulti
                     ce.Kind = i == 1 ? CashOutKind.Failed : CashOutKind.Success; ce.Message = i == 1 ? "CASH OUT button not visible in this window." : "";
                     CashOutHistory.Add(m1.Id, ce);
                 }
-                Pump(1300);
+                Pump(100); TickNow(win);   // refresh directly: a fixed wait on the 1 s timer was flaky when the PC was busy
                 TextBlock histToggle = FindFirst<TextBlock>(list, "Click history (4)  \u25B8");
                 Check("Cash out: card has the expandable 'Click history' toggle", histToggle != null, "");
                 if (histToggle != null)
@@ -599,10 +677,30 @@ namespace RbxMulti
             return null;
         }
 
+        /// <summary>Waits (up to 5 s) until a RamSlider has committed its pending change.</summary>
+        private static void Settle(RamSlider slider)
+        {
+            DateTime end = DateTime.UtcNow.AddSeconds(5);
+            while (slider.IsBusy && DateTime.UtcNow < end) Pump(50);
+            Pump(50);
+        }
+
         private static void TickNow(MainWindow win)
         {
             typeof(MainWindow).GetMethod("OnTimerTick", BindingFlags.NonPublic | BindingFlags.Instance).Invoke(win, new object[] { null, EventArgs.Empty });
             Pump(50);
+        }
+
+        private static void CollectSliders(DependencyObject root, List<RamSlider> into)
+        {
+            if (root == null) return;
+            RamSlider r = root as RamSlider;
+            if (r != null) into.Add(r);
+            foreach (object ch in LogicalTreeHelper.GetChildren(root))
+            {
+                DependencyObject d = ch as DependencyObject;
+                if (d != null) CollectSliders(d, into);
+            }
         }
 
         private static TextBlock FindText(DependencyObject root, string text)
