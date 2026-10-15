@@ -1,0 +1,11 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>netstandard2.0</TargetFramework>
+    <LangVersion>8.0</LangVersion>
+    <RootNamespace>CookieJar.Platform.Mac</RootNamespace>
+    <AssemblyName>CookieJar.Platform.Mac</AssemblyName>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\CookieJar.Platform\CookieJar.Platform.csproj" />
+  </ItemGroup>
+</Project>

@@ -1,0 +1,12 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>netstandard2.0</TargetFramework>
+    <LangVersion>8.0</LangVersion>
+    <RootNamespace>CookieJar.AppModel</RootNamespace>
+    <AssemblyName>CookieJar.AppModel</AssemblyName>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\CookieJar.Core\CookieJar.Core.csproj" />
+    <ProjectReference Include="..\CookieJar.Platform\CookieJar.Platform.csproj" />
+  </ItemGroup>
+</Project>
