@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Threading;
 using CookieJar.Platform;
 using CookieJar.Platform.Mac;
 
@@ -33,8 +34,67 @@ namespace CookieJar.Tests
         public bool IsElevated() { return false; }
     }
 
+    /// <summary>A process list that changes while the test runs: `open` adds a new pid a little later.</summary>
+    internal sealed class LiveProcesses : IProcessService
+    {
+        private readonly object sync = new object();
+        private readonly List<int> pids = new List<int> { 100 };
+        public int NextPid = 200;
+
+        public int AddNewClient() { lock (sync) { int pid = NextPid++; pids.Add(pid); return pid; } }
+        public IReadOnlyList<int> FindByName(string processName) { lock (sync) { return new List<int>(pids); } }
+
+        public bool IsRunning(int pid) { return false; }
+        public long GetWorkingSetBytes(int pid) { return -1; }
+        public IReadOnlyList<int> GetDescendants(int pid) { return new List<int>(); }
+        public int KillTree(int pid) { return 0; }
+        public bool SetBackgroundPriority(int pid) { return false; }
+        public bool ClearBackgroundPriority(int pid) { return false; }
+        public bool TryCapWorkingSet(int pid, long maxBytes) { return false; }
+        public bool ClearWorkingSetCap(int pid) { return false; }
+        public bool IsElevated() { return false; }
+    }
+
+    internal sealed class DelayedOpenRunner : ICommandRunner
+    {
+        private readonly LiveProcesses procs;
+        public int OpenCalls;
+        public DelayedOpenRunner(LiveProcesses procs) { this.procs = procs; }
+
+        public CommandResult Run(string fileName, IReadOnlyList<string> arguments, int timeoutMs)
+        {
+            Interlocked.Increment(ref OpenCalls);
+            // The client shows up some milliseconds after `open` returns, like a real launch.
+            ThreadPool.QueueUserWorkItem(delegate { Thread.Sleep(40); procs.AddNewClient(); });
+            return new CommandResult(0, "", "", false, false);
+        }
+    }
+
     public static class RobloxTests
     {
+        private static void ConcurrentLaunchTests()
+        {
+            const string app = "/Applications/Roblox.app";
+            string player = app + "/Contents/MacOS/RobloxPlayer";
+            const string url = "roblox://experiences/start?placeId=1";
+
+            var procs = new LiveProcesses();
+            var runner = new DelayedOpenRunner(procs);
+            var launcher = new MacRobloxLauncher(runner, procs, Locator(new[] { app }, new[] { player }, "/Users/tester"), ms => Thread.Sleep(ms), 5);
+
+            LaunchResult a = null, b = null;
+            var t1 = new Thread(delegate () { a = launcher.LaunchUrl(url, 3000); });
+            var t2 = new Thread(delegate () { b = launcher.LaunchUrl(url, 3000); });
+            t1.Start(); t2.Start();
+            t1.Join(); t2.Join();
+
+            T.Check("two launches at once both start a client", a != null && b != null && a.Started && b.Started,
+                (a == null ? "null" : a.Started + "/" + a.Error) + " | " + (b == null ? "null" : b.Started + "/" + b.Error));
+            T.Check("two launches at once never get the same pid", a != null && b != null && a.Pid != b.Pid && a.Pid >= 200 && b.Pid >= 200,
+                (a == null ? "0" : a.Pid.ToString()) + " vs " + (b == null ? "0" : b.Pid.ToString()));
+            T.Check("each launch ran open exactly once", runner.OpenCalls == 2, runner.OpenCalls.ToString());
+        }
+
         private static string Join(IEnumerable<string> values)
         {
             return string.Join("|", values);
@@ -64,6 +124,7 @@ namespace CookieJar.Tests
             LocatorTests();
             LoginStateTests();
             LauncherTests();
+            ConcurrentLaunchTests();
         }
 
         private static void LocatorTests()

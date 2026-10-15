@@ -13,6 +13,8 @@ namespace CookieJar.Tests
         {
             PngDecodeCases();
             CaptureCases();
+            CropCases();
+            WindowContentCases();
         }
 
         // ---------------------------------------------------------------- PNG decoding
@@ -96,6 +98,94 @@ namespace CookieJar.Tests
             T.Check(name, ok, detail);
         }
 
+        // ---------------------------------------------------------------- crop and content-only capture
+
+        private static RawImage Gradient(int w, int h)
+        {
+            var px = new byte[w * h * 4];
+            for (int y = 0; y < h; y++)
+                for (int x = 0; x < w; x++)
+                {
+                    int o = (y * w + x) * 4;
+                    px[o] = (byte)(y * 16 + x);   // B encodes the source position: easy to check after a crop
+                    px[o + 1] = 1; px[o + 2] = 2; px[o + 3] = 255;
+                }
+            return new RawImage(w, h, w * 4, px);
+        }
+
+        private static void CropCases()
+        {
+            RawImage src = Gradient(4, 4);
+
+            RawImage c = MacScreenCapture.Crop(src, 1, 2, 2, 2);
+            T.Check("crop (1,2,2,2) has size 2x2 and starts at source pixel (1,2)",
+                c != null && c.Width == 2 && c.Height == 2 && c.Stride == 8 && c.Pixels[0] == 2 * 16 + 1 && c.Pixels[4] == 2 * 16 + 2 && c.Pixels[8] == 3 * 16 + 1,
+                c == null ? "null" : c.Pixels[0] + "," + c.Pixels[4] + "," + c.Pixels[8]);
+            T.Check("crop of the whole image returns the same image", ReferenceEquals(MacScreenCapture.Crop(src, 0, 0, 4, 4), src));
+
+            RawImage clamped = MacScreenCapture.Crop(src, 2, 2, 10, 10);
+            T.Check("a crop larger than the remainder is clamped to the image", clamped != null && clamped.Width == 2 && clamped.Height == 2);
+            RawImage negative = MacScreenCapture.Crop(src, -1, -1, 3, 3);
+            T.Check("a crop starting before the image is clamped at 0", negative != null && negative.Width == 2 && negative.Height == 2 && negative.Pixels[0] == 0);
+            T.Check("a crop fully outside the image is null", MacScreenCapture.Crop(src, 4, 0, 2, 2) == null && MacScreenCapture.Crop(src, 0, 9, 2, 2) == null);
+            T.Check("a crop with no area is null", MacScreenCapture.Crop(src, 1, 1, 0, 3) == null && MacScreenCapture.Crop(src, 1, 1, 3, -1) == null);
+            T.Check("crop of null is null", MacScreenCapture.Crop(null, 0, 0, 1, 1) == null);
+            c.Pixels[0] = 99;
+            T.Check("a cropped image is a copy, not a view of the source", src.Pixels[src.OffsetOf(1, 2)] == 2 * 16 + 1);
+        }
+
+        private sealed class StubWindows : IWindowService
+        {
+            public ScreenRect Frame; public ScreenRect Content; public bool HasBounds = true; public bool HasContent = true;
+            public IReadOnlyList<long> GetWindowsOfProcess(int pid) { return new long[0]; }
+            public long GetMainWindow(int pid) { return 0; }
+            public bool Exists(long windowId) { return true; }
+            public bool IsVisible(long windowId) { return true; }
+            public bool IsMinimised(long windowId) { return false; }
+            public bool Restore(long windowId) { return false; }
+            public bool Minimise(long windowId) { return false; }
+            public bool BringToFront(long windowId) { return false; }
+            public long GetForegroundWindow() { return 0; }
+            public bool TryGetBounds(long windowId, out ScreenRect bounds) { bounds = Frame; return HasBounds; }
+            public bool TryGetContentBounds(long windowId, out ScreenRect bounds) { bounds = Content; return HasContent; }
+            public bool SetBounds(long windowId, ScreenRect bounds) { return false; }
+            public IReadOnlyList<MonitorInfo> GetMonitors() { return new MonitorInfo[0]; }
+        }
+
+        private static void WindowContentCases()
+        {
+            // A 4x4 pixel window image from a window that is 2x2 points (2 px per point, Retina). The content area starts
+            // one point (2 px) below the top edge, so the title bar rows are cropped and 2 rows remain.
+            var rows = new List<byte>();
+            for (int y = 0; y < 4; y++)
+            {
+                rows.Add(0);   // filter None
+                for (int x = 0; x < 4; x++) { rows.Add((byte)(y * 16 + x)); rows.Add(1); rows.Add(2); rows.Add(255); }
+            }
+            byte[] png = BuildPng(4, 4, 6, false, null, null, rows.ToArray());
+
+            var temp = new FakeTemp();
+            var runner = new FakeRunner { Temp = temp, OutputFile = png };
+            var windows = new StubWindows { Frame = new ScreenRect(100, 100, 2, 2), Content = new ScreenRect(100, 101, 2, 1) };
+            var capture = new MacScreenCapture(runner, temp, () => PermissionState.Granted, windows);
+
+            RawImage content = capture.CaptureWindow(55);
+            T.Check("CaptureWindow with a window service crops the title bar (2 px per point)",
+                content != null && content.Width == 4 && content.Height == 2 && content.Pixels[2] == 2 * 16,   // the PNG's R byte is BGRA index 2
+                content == null ? "null" : content.Width + "x" + content.Height);
+
+            windows.Content = new ScreenRect(100, 100, 2, 2);
+            RawImage whole = capture.CaptureWindow(55);
+            T.Check("a full-screen / borderless window (content == frame) is returned whole", whole != null && whole.Width == 4 && whole.Height == 4);
+
+            windows.HasContent = false;
+            T.Check("when the content area is unknown the whole window is returned, not a guess",
+                capture.CaptureWindow(55) != null && capture.CaptureWindow(55).Height == 4);
+
+            var noWindows = new MacScreenCapture(runner, temp, () => PermissionState.Granted);
+            T.Check("without a window service the whole window (title bar included) is returned", noWindows.CaptureWindow(55).Height == 4);
+        }
+
         // ---------------------------------------------------------------- capture commands
 
         private static void CaptureCases()
@@ -122,9 +212,9 @@ namespace CookieJar.Tests
             runner = new FakeRunner { Temp = temp, OutputFile = small };
             capture = new MacScreenCapture(runner, temp, () => PermissionState.Granted);
             RawImage window = capture.CaptureWindow(12345);
-            T.Check("window argv is exactly: -x -l12345 -t png <tmp>",
+            T.Check("window argv is exactly: -x -o -l12345 -t png <tmp> (-o leaves the window shadow out)",
                 runner.FileName == "screencapture" &&
-                ArgsEqual(runner.Args, "-x", "-l12345", "-t", "png", temp.LastPath), Describe(runner));
+                ArgsEqual(runner.Args, "-x", "-o", "-l12345", "-t", "png", temp.LastPath), Describe(runner));
             T.Check("window returns the decoded PNG", window != null && window.Width == 2);
 
             temp = new FakeTemp();

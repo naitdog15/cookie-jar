@@ -30,7 +30,11 @@ namespace CookieJar.Core
 
         private readonly IProcessService _processes;
 
-        /// <summary>Pid of the foreground client, or 0. Replaceable so tests need no window server.</summary>
+        /// <summary>
+        /// Pid that owns the frontmost window: 0 when there is none, negative when it cannot be told. While it is
+        /// unknown nothing is slowed down (a client you are using must never be throttled by mistake).
+        /// Wire it with ForegroundFrom(platform); replaceable so tests need no window server.
+        /// </summary>
         public Func<int> ForegroundPid = DefaultForegroundPid;
 
         /// <summary>Optional log sink (called on the UI thread, e.g. when the OS refuses to change a client).</summary>
@@ -81,11 +85,25 @@ namespace CookieJar.Core
             }
         }
 
-        // MAC-UNVERIFIED: no foreground-window query is wired on macOS yet, so nothing is exempt and the
-        // foreground client may be throttled. The Windows version uses GetForegroundWindow here.
+        /// <summary>The default source: unknown (-1), so no client is slowed until a real source is wired.</summary>
         public static int DefaultForegroundPid()
         {
-            return 0;
+            return -1;
+        }
+
+        /// <summary>
+        /// A foreground source from the platform's window service (it must implement IForegroundProcessSource);
+        /// unknown (-1) when it does not.
+        /// </summary>
+        public static Func<int> ForegroundFrom(IPlatform platform)
+        {
+            return delegate
+            {
+                IForegroundProcessSource source = platform == null ? null : platform.Windows as IForegroundProcessSource;
+                if (source == null) return -1;
+                int pid = source.GetForegroundProcessId();
+                return pid < 0 ? 0 : pid;   // a source answers 0 for "no window"; never negative
+            };
         }
 
         /// <summary>Brings every client to the wanted state for this moment. Call about once a second.</summary>
@@ -101,7 +119,8 @@ namespace CookieJar.Core
                 int flags;
                 _now.TryGetValue(t.Pid, out flags);
                 if (t.Running) flags |= IsRunning;
-                if (t.Running && t.Pid != fg && (nowUtc - t.StartedUtc).TotalSeconds >= GraceSeconds) flags |= WantThrottle;
+                // fg < 0: the foreground process is unknown, so nothing may be slowed (and anything slowed is restored).
+                if (t.Running && fg >= 0 && t.Pid != fg && (nowUtc - t.StartedUtc).TotalSeconds >= GraceSeconds) flags |= WantThrottle;
                 _now[t.Pid] = flags;
             }
 

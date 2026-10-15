@@ -56,7 +56,7 @@ Windows column: implemented and tested here (Windows project). macOS column: cod
 | Background priority (lower) | supported | unverified (nice) |
 | Background priority (restore) | supported | unverified (raising priority needs root, may fail) |
 | Working-set RAM cap | supported | unsupported (macOS has none; UI must hide RAM cap) |
-| Secret store | supported (DPAPI) | unverified (`security` keychain; secret appears on argv briefly) |
+| Secret store | supported (DPAPI) | unverified (`security -i` keychain; the secret is sent on stdin, never on argv) |
 | Window list/move/resize/tiling | supported | unverified (Accessibility grant needed) |
 | Input (click, keys) | supported | unverified (CGEvent; Accessibility grant; ANSI key codes only) |
 | Screen capture | supported | unverified (Screen Recording grant) |
@@ -72,8 +72,7 @@ Windows column: implemented and tested here (Windows project). macOS column: cod
 Platform.Mac and Platform are frozen, so contract changes are listed, not done.
 
 Contract requests:
-- Mac-H2: MacSecretStore passes the secret on argv (`security add-generic-password -w`), visible in `ps` briefly. Fix: `security -i` with stdin, needs an `ICommandRunner` overload taking stdin.
-- No composed `MacPlatform : IPlatform` exists; App/AppModel wiring builds it from parts. Nobody filed this; it should be added.
+- (Fixed, see "Second review" below) The secret-on-argv issue and the missing composed `MacPlatform`.
 
 Core:
 - MiniBarSettings still has Windows ClickMethod values (SendInput/Legacy); the Mac input layer must map or ignore them.
@@ -114,5 +113,30 @@ Quit the clients afterward yourself (Cmd-Q); the scripts never close them.
 1. Port the detectors from `System.Drawing.Bitmap` to `RawImage` so they live in Core.
 2. Install the .NET 8 SDK, build and run the Avalonia App, fix compile errors there.
 3. Replace the tray and mini bar with a menu bar item.
-4. Add the composed MacPlatform, resolve the contract requests above (stdin secret store), then run Platform.Mac against a real Mac and clear the MAC-UNVERIFIED markers.
+4. Run Platform.Mac against a real Mac and clear the MAC-UNVERIFIED markers (the composed `MacPlatform.CreateDefault()` and the stdin secret store are done).
 5. Packaging, code signing and notarisation.
+
+## Second review (Codex) and what changed
+
+An outside review (Codex, default model at low effort; not confirmed to be Sol 5.6) read the macOS adapters and, with the
+Windows originals pasted in, the Core / AppModel / contracts. Each finding was checked against the code before acting.
+
+Fixed:
+- **Secret on argv**: `MacSecretStore` now sends `add-generic-password ...` to `security -i` on stdin through the new
+  `IStdinCommandRunner` (additive; `ProcessCommandRunner` implements it). Without a stdin runner `Set` refuses; it never falls back to argv. Values with CR/LF/NUL are refused. Stdin is written on its own thread under the call's timeout.
+- **Window identity**: the window id is now the real `CGWindowID` (from `CGWindowListCopyWindowInfo`), stable while the window exists and accepted by `screencapture -l`. Raise / minimise / move find the window by process and current bounds when they run (no list index, no titles pasted into scripts).
+- **Content bounds**: a window covering a whole display (full screen / borderless) keeps its full frame; others lose the 28 pt title bar. `CaptureWindow` uses `-o` and crops the title bar when given the window service.
+- **Zombies** are no longer "running" (`ps -o stat=` state Z). **Lock file** is no longer deleted on release (delete race).
+- **Launch PID races**: launches are serialised and a pid already handed out is never handed out again (test fails without the lock).
+- **Launch flow (AppModel)**: `launchOne` now takes a `LaunchRequest` (profile name, place id, 60 s timeout, cancellation token, first-launch cache flag) and returns an `AccountLaunchResult` (Ok / TicketFailed (+TokenExpired event) / TimedOut / Cancelled / Failed), matching the Windows runner. Cancel is re-checked after the warning question. A missing confirmation handler now declines instead of accepting.
+- **Foreground process**: new optional `IForegroundProcessSource` (Windows and macOS window services implement it) and `BackgroundEfficiency.ForegroundFrom(platform)`. Unknown foreground now means "slow nothing"; the old default of 0 would have slowed the client in front after 60 s.
+- **MemoryPolicy.ValidateAllocation** is exception-safe again, like the original.
+- **Composed `MacPlatform.CreateDefault()`** wires every Mac service and the capability flags; the App uses it (it previously wired six services by hand).
+- **RawImage** rejects row sizes that overflow 32 bits; ownership documented. Platform lifetime/threading documented.
+
+Checked and not changed:
+- `ApplyTiling` is not missing; it is `ProfileTiling.ApplyTiling` (a separate file).
+- Tiling across monitors: the port breaks ties between equal-sized monitors by list order (the original `Sort` was unstable); an empty monitor list returns nothing because pure logic cannot enumerate monitors (callers pass `IWindowService.GetMonitors()`).
+- Lock-count members stay in the contract (documented as Windows-only, 0 elsewhere); the exited/unknown distinction for working-set reads is recoverable with `IsRunning` (documented).
+
+Still open: `BackgroundEfficiency` and `LaunchOrchestrator` are not yet driven by the app's timer / buttons (the Avalonia shell does not call them); the ticket (HTTP) launcher is not ported, so `launchOne` has no real implementation yet; `CGWindowListCopyWindowInfo` through JXA, the `-o` capture size maths and `security -i` quoting are all unverified until run on a Mac.

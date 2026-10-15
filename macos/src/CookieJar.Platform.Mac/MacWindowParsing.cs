@@ -4,18 +4,32 @@ using System.Globalization;
 
 namespace CookieJar.Platform.Mac
 {
-    /// <summary>One window from the System Events listing. Bounds are top-left screen pixels.</summary>
+    /// <summary>
+    /// One window from the CGWindowList listing. Id is the CGWindowID: unique, and stable for as long as the window
+    /// exists (it does not shift when other windows open, close or change order). Bounds are top-left screen points.
+    /// </summary>
     public sealed class MacWindowRow
     {
-        public MacWindowRow(int index, ScreenRect bounds, bool minimised, bool visible)
+        /// <summary>Smallest side of a window that counts as an application window (menus and overlays are smaller).</summary>
+        public const int MinWindowSize = 32;
+
+        public MacWindowRow(long id, int pid, int layer, ScreenRect bounds, bool onScreen)
         {
-            Index = index; Bounds = bounds; Minimised = minimised; Visible = visible;
+            Id = id; Pid = pid; Layer = layer; Bounds = bounds; OnScreen = onScreen;
         }
-        /// <summary>1-based window index in System Events.</summary>
-        public int Index { get; }
+        public long Id { get; }
+        public int Pid { get; }
+        /// <summary>CGWindowLevel; 0 is a normal window, menus, the dock and overlays use other layers.</summary>
+        public int Layer { get; }
         public ScreenRect Bounds { get; }
-        public bool Minimised { get; }
-        public bool Visible { get; }
+        /// <summary>kCGWindowIsOnscreen: false for a minimised window and also for one on another Space.</summary>
+        public bool OnScreen { get; }
+
+        /// <summary>A normal application window: layer 0 and a real size.</summary>
+        public bool IsAppWindow
+        {
+            get { return Layer == 0 && Bounds.Width >= MinWindowSize && Bounds.Height >= MinWindowSize; }
+        }
     }
 
     /// <summary>One display from the NSScreen listing, in Cocoa coordinates (y grows upwards from the primary display).</summary>
@@ -44,36 +58,45 @@ namespace CookieJar.Platform.Mac
 
     /// <summary>
     /// Scripts and pure parsers for the osascript output used by MacWindowService. No I/O; never throws.
-    /// Window id = (pid &lt;&lt; 20) | windowIndex, so one long names a window of one process.
+    /// A window is named by its CGWindowID (a positive number that fits 32 bits), the same number `screencapture -l` takes.
+    /// Window state is read with CGWindowListCopyWindowInfo (JXA, no Accessibility needed); changes (raise, minimise,
+    /// move) go through System Events, which finds the target window by process and current position at that moment,
+    /// never by list position and never by title text (so nothing another app controls is pasted into a script).
     /// </summary>
     public static class MacWindowParsing
     {
-        private const int IndexBits = 20;
-        private const long IndexMask = (1L << IndexBits) - 1;
-
-        /// <summary>Height removed from the outer frame for TryGetContentBounds.</summary>
-        // MAC-UNVERIFIED: 28 px is the standard unified title bar; toolbars and tabbed windows make it taller.
+        /// <summary>Height removed from the outer frame of an ordinary titled window for TryGetContentBounds.</summary>
+        // MAC-UNVERIFIED: 28 pt is the standard unified title bar; toolbars and tabbed windows make it taller.
         public const int TitleBarHeight = 28;
 
-        // Placeholders (@PID@, @IDX@, @VALUE@, @X@, @Y@, @W@, @H@) are filled by the Build*Script helpers.
-        // AppleScript comments are not used so the text can be sent as one -e argument.
+        /// <summary>Two rectangles closer than this on every edge count as the same (points).</summary>
+        public const int SameRectTolerance = 2;
 
-        /// <summary>Lists each window of the process as `index|x|y|w|h|minimised|visible`.</summary>
-        public const string WindowsOfProcessScript = @"tell application ""System Events""
-	set rowsText to """"
-	repeat with p in (every process whose unix id is @PID@)
-		set n to count of windows of p
-		repeat with i from 1 to n
-			set w to window i of p
-			set {px, py} to position of w
-			set {sw, sh} to size of w
-			set mn to ((value of attribute ""AXMinimized"" of w) is true)
-			set vis to ((visible of w) is true)
-			set rowsText to rowsText & i & ""|"" & px & ""|"" & py & ""|"" & sw & ""|"" & sh & ""|"" & (mn as string) & ""|"" & (vis as string) & linefeed
-		end repeat
-	end repeat
-	return rowsText
-end tell";
+        // Placeholders (@PID@, @X@, @Y@, @W@, @H@, @NX@, @NY@, @NW@, @NH@, @VALUE@) are filled by the Build*Script helpers
+        // with whole numbers only. AppleScript comments are not used so the text can be sent as one -e argument.
+
+        /// <summary>
+        /// Lists windows as `id|pid|layer|x|y|w|h|onscreen`, front to back; @PID@ 0 lists every process.
+        /// Run with `osascript -l JavaScript`.
+        /// </summary>
+        // MAC-UNVERIFIED: assumes JXA can call CGWindowListCopyWindowInfo after ObjC.import('CoreGraphics') and that
+        // ObjC.deepUnwrap turns the CFArray of dictionaries into plain objects (kCGWindowNumber, kCGWindowOwnerPID,
+        // kCGWindowLayer, kCGWindowBounds {X,Y,Width,Height}, kCGWindowIsOnscreen).
+        public const string WindowListScript = @"(function () {
+  ObjC.import('CoreGraphics');
+  var info = ObjC.deepUnwrap(ObjC.castRefToObject(
+    $.CGWindowListCopyWindowInfo($.kCGWindowListOptionAll | $.kCGWindowListExcludeDesktopElements, $.kCGNullWindowID)));
+  var wanted = @PID@;
+  var rows = [];
+  for (var i = 0; i < info.length; i++) {
+    var w = info[i];
+    if (wanted !== 0 && w.kCGWindowOwnerPID !== wanted) continue;
+    var b = w.kCGWindowBounds || {};
+    rows.push([w.kCGWindowNumber, w.kCGWindowOwnerPID, w.kCGWindowLayer, b.X, b.Y, b.Width, b.Height,
+      w.kCGWindowIsOnscreen ? 1 : 0].join('|'));
+  }
+  return rows.join('\n');
+})();";
 
         /// <summary>Prints the unix id of the frontmost process, or nothing when there is none.</summary>
         public const string FrontmostScript = @"tell application ""System Events""
@@ -82,22 +105,31 @@ end tell";
 	return (unix id of item 1 of frontProcs) as string
 end tell";
 
-        private const string RaiseTemplate = @"tell application ""System Events""
+        // Finds the window of the process whose position and size match the CGWindowList row (within 2 points) and then
+        // runs one action on it. If no window matches, the script raises an error and the call reports failure.
+        private const string ActionTemplate = @"tell application ""System Events""
 	set p to first process whose unix id is @PID@
-	set frontmost of p to true
-	perform action ""AXRaise"" of window @IDX@ of p
+	set target to missing value
+	repeat with i from 1 to count of windows of p
+		set w to window i of p
+		set {px, py} to position of w
+		set {sw, sh} to size of w
+		if px > (@X@ - 3) and px < (@X@ + 3) and py > (@Y@ - 3) and py < (@Y@ + 3) and sw > (@W@ - 3) and sw < (@W@ + 3) and sh > (@H@ - 3) and sh < (@H@ + 3) then
+			set target to w
+			exit repeat
+		end if
+	end repeat
+	if target is missing value then error ""window not found""
+@ACTION@
 end tell";
 
-        private const string SetMinimisedTemplate = @"tell application ""System Events""
-	set value of attribute ""AXMinimized"" of window @IDX@ of (first process whose unix id is @PID@) to @VALUE@
-end tell";
+        private const string RaiseAction = @"	set frontmost of p to true
+	perform action ""AXRaise"" of target";
 
-        private const string SetBoundsTemplate = @"tell application ""System Events""
-	tell window @IDX@ of (first process whose unix id is @PID@)
-		set position to {@X@, @Y@}
-		set size to {@W@, @H@}
-	end tell
-end tell";
+        private const string SetMinimisedAction = @"	set value of attribute ""AXMinimized"" of target to @VALUE@";
+
+        private const string SetBoundsAction = @"	set position of target to {@NX@, @NY@}
+	set size of target to {@NW@, @NH@}";
 
         /// <summary>
         /// Prints one line per display: id|frameX|frameY|frameW|frameH|visX|visY|visW|visH|scale|isPrimary (Cocoa coordinates).
@@ -119,9 +151,10 @@ end tell";
   return rows.join('\n');
 })();";
 
+        /// <summary>The window-list script for one process (pid 0 lists every process).</summary>
         public static string WindowsScript(int pid)
         {
-            return WindowsOfProcessScript.Replace("@PID@", Num(pid));
+            return WindowListScript.Replace("@PID@", Num(Math.Max(0, pid)));
         }
 
         public static string FrontmostProcessScript()
@@ -129,46 +162,40 @@ end tell";
             return FrontmostScript;
         }
 
-        public static string RaiseScript(int pid, int index)
+        /// <summary>Raises the window of pid that currently has these bounds.</summary>
+        public static string RaiseScript(int pid, ScreenRect current)
         {
-            return RaiseTemplate.Replace("@PID@", Num(pid)).Replace("@IDX@", Num(index));
+            return Action(pid, current, RaiseAction);
         }
 
-        public static string SetMinimisedScript(int pid, int index, bool minimised)
+        /// <summary>Minimises or restores the window of pid that currently has these bounds.</summary>
+        public static string SetMinimisedScript(int pid, ScreenRect current, bool minimised)
         {
-            return SetMinimisedTemplate.Replace("@PID@", Num(pid)).Replace("@IDX@", Num(index))
-                .Replace("@VALUE@", minimised ? "true" : "false");
+            return Action(pid, current, SetMinimisedAction.Replace("@VALUE@", minimised ? "true" : "false"));
         }
 
-        public static string SetBoundsScript(int pid, int index, ScreenRect bounds)
+        /// <summary>Moves and resizes the window of pid that currently has the bounds `current`.</summary>
+        public static string SetBoundsScript(int pid, ScreenRect current, ScreenRect target)
         {
-            return SetBoundsTemplate.Replace("@PID@", Num(pid)).Replace("@IDX@", Num(index))
-                .Replace("@X@", Num(bounds.X)).Replace("@Y@", Num(bounds.Y))
-                .Replace("@W@", Num(bounds.Width)).Replace("@H@", Num(bounds.Height));
+            return Action(pid, current, SetBoundsAction
+                .Replace("@NX@", Num(target.X)).Replace("@NY@", Num(target.Y))
+                .Replace("@NW@", Num(target.Width)).Replace("@NH@", Num(target.Height)));
         }
 
-        /// <summary>Window id from pid and 1-based index. Returns 0 (invalid) for a non-positive pid or an index out of range.</summary>
-        public static long EncodeWindowId(int pid, int index)
+        private static string Action(int pid, ScreenRect current, string action)
         {
-            if (pid <= 0 || index <= 0 || index > IndexMask) return 0;
-            return ((long)pid << IndexBits) | (long)index;
+            return ActionTemplate.Replace("@ACTION@", action).Replace("@PID@", Num(pid))
+                .Replace("@X@", Num(current.X)).Replace("@Y@", Num(current.Y))
+                .Replace("@W@", Num(current.Width)).Replace("@H@", Num(current.Height));
         }
 
-        /// <summary>Splits a window id. False for 0, negative or an index of 0.</summary>
-        public static bool DecodeWindowId(long windowId, out int pid, out int index)
+        /// <summary>True for a usable CGWindowID: positive and within 32 bits (what `screencapture -l` accepts).</summary>
+        public static bool IsValidWindowId(long windowId)
         {
-            pid = 0;
-            index = 0;
-            if (windowId <= 0) return false;
-            long p = windowId >> IndexBits;
-            long i = windowId & IndexMask;
-            if (p <= 0 || p > int.MaxValue || i <= 0) return false;
-            pid = (int)p;
-            index = (int)i;
-            return true;
+            return windowId > 0 && windowId <= uint.MaxValue;
         }
 
-        /// <summary>Parses the windows listing. Blank, malformed or index-0 lines are skipped.</summary>
+        /// <summary>Parses the window listing. Blank, malformed or out-of-range lines are skipped.</summary>
         public static List<MacWindowRow> ParseWindowRows(string text)
         {
             var rows = new List<MacWindowRow>();
@@ -187,17 +214,19 @@ end tell";
             if (string.IsNullOrWhiteSpace(line)) return false;
 
             string[] f = line.Trim().Split('|');
-            if (f.Length != 7) return false;
+            if (f.Length != 8) return false;
 
-            int index;
-            if (!int.TryParse(f[0].Trim(), NumberStyles.None, CultureInfo.InvariantCulture, out index) || index <= 0) return false;
+            long id;
+            if (!long.TryParse(f[0].Trim(), NumberStyles.None, CultureInfo.InvariantCulture, out id) || !IsValidWindowId(id)) return false;
+            int pid, layer;
+            if (!int.TryParse(f[1].Trim(), NumberStyles.None, CultureInfo.InvariantCulture, out pid) || pid <= 0) return false;
+            if (!int.TryParse(f[2].Trim(), NumberStyles.AllowLeadingSign, CultureInfo.InvariantCulture, out layer)) return false;
 
             double x, y, w, h;
-            if (!TryNumber(f[1], out x) || !TryNumber(f[2], out y) || !TryNumber(f[3], out w) || !TryNumber(f[4], out h)) return false;
+            if (!TryNumber(f[3], out x) || !TryNumber(f[4], out y) || !TryNumber(f[5], out w) || !TryNumber(f[6], out h)) return false;
             if (w < 0 || h < 0) return false;
 
-            row = new MacWindowRow(index, new ScreenRect(Round(x), Round(y), Round(w), Round(h)),
-                IsTrueWord(f[5]), IsTrueWord(f[6]));
+            row = new MacWindowRow(id, pid, layer, new ScreenRect(Round(x), Round(y), Round(w), Round(h)), f[7].Trim() == "1");
             return true;
         }
 
@@ -281,13 +310,34 @@ end tell";
             return Round(primaryHeight - y - height);
         }
 
-        /// <summary>Content area of an outer window frame. False when the frame is too short to have one.</summary>
-        public static bool ToContentBounds(ScreenRect frame, out ScreenRect content)
+        /// <summary>
+        /// Content area of an outer window frame. A frame that covers a whole display (full screen or borderless) has
+        /// no title bar, so the content is the frame itself; any other frame loses TitleBarHeight at the top. False when
+        /// the frame is empty or too short to have a content area.
+        /// </summary>
+        // MAC-UNVERIFIED: "covers a whole display" is a heuristic for full screen / borderless windows; a titled window
+        // that happens to be exactly screen sized would be reported without its title bar.
+        public static bool ToContentBounds(ScreenRect frame, IReadOnlyList<MonitorInfo> monitors, out ScreenRect content)
         {
             content = frame;
+            if (frame.Width <= 0 || frame.Height <= 0) return false;
+            if (monitors != null)
+            {
+                foreach (MonitorInfo m in monitors)
+                {
+                    if (SameRect(frame, m.Bounds)) return true;
+                }
+            }
             if (frame.Height <= TitleBarHeight) return false;
             content = new ScreenRect(frame.X, frame.Y + TitleBarHeight, frame.Width, frame.Height - TitleBarHeight);
             return true;
+        }
+
+        /// <summary>True when every edge of a and b is within SameRectTolerance points.</summary>
+        public static bool SameRect(ScreenRect a, ScreenRect b)
+        {
+            return Math.Abs(a.X - b.X) <= SameRectTolerance && Math.Abs(a.Y - b.Y) <= SameRectTolerance
+                && Math.Abs(a.Width - b.Width) <= SameRectTolerance && Math.Abs(a.Height - b.Height) <= SameRectTolerance;
         }
 
         private static bool IsTrueWord(string s)

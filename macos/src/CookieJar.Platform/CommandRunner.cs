@@ -30,14 +30,31 @@ namespace CookieJar.Platform
     }
 
     /// <summary>Default runner based on System.Diagnostics.Process. Kills the process on timeout.</summary>
-    public sealed class ProcessCommandRunner : ICommandRunner
+    /// <summary>
+    /// A runner that can also feed text to the child's standard input. Used when a secret must never appear on a
+    /// command line (anyone on the machine can read argv with ps). Added alongside ICommandRunner so existing fakes
+    /// keep compiling; a caller that needs stdin and gets a runner without it must refuse, never fall back to argv.
+    /// </summary>
+    public interface IStdinCommandRunner : ICommandRunner
+    {
+        /// <summary>Like ICommandRunner.Run, with standardInput written to the child's stdin and then closed.</summary>
+        CommandResult Run(string fileName, IReadOnlyList<string> arguments, string standardInput, int timeoutMs);
+    }
+
+    public sealed class ProcessCommandRunner : IStdinCommandRunner
     {
         public CommandResult Run(string fileName, IReadOnlyList<string> arguments, int timeoutMs)
+        {
+            return Run(fileName, arguments, null, timeoutMs);
+        }
+
+        public CommandResult Run(string fileName, IReadOnlyList<string> arguments, string standardInput, int timeoutMs)
         {
             var psi = new ProcessStartInfo
             {
                 FileName = fileName,
                 UseShellExecute = false,
+                RedirectStandardInput = standardInput != null,
                 RedirectStandardOutput = true,
                 RedirectStandardError = true,
                 CreateNoWindow = true,
@@ -54,6 +71,17 @@ namespace CookieJar.Platform
                     p.Start();
                     p.BeginOutputReadLine();
                     p.BeginErrorReadLine();
+                    if (standardInput != null)
+                    {
+                        // Written on another thread, after output draining has started: a child that does not read its
+                        // stdin (or a big input) can no longer block this call, and the wait below still enforces the timeout.
+                        string input = standardInput;
+                        System.Threading.Tasks.Task.Run(() =>
+                        {
+                            try { p.StandardInput.Write(input); p.StandardInput.Close(); }
+                            catch (Exception) { /* the child may have exited already; its exit code tells the story */ }
+                        });
+                    }
                     bool done;
                     if (timeoutMs <= 0) { p.WaitForExit(); done = true; }
                     else done = p.WaitForExit(timeoutMs);

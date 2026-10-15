@@ -18,8 +18,48 @@ namespace CookieJar.Tests
             return new MemoryAllocation { Pid = pid, Preset = preset, CustomMb = customMb, Label = label };
         }
 
+        /// <summary>An allocation list that fails while it is being read, like a list changed from another thread.</summary>
+        private sealed class ThrowingList : IList<MemoryAllocation>
+        {
+            private readonly bool _throwOnCount;
+            public ThrowingList(bool throwOnCount) { _throwOnCount = throwOnCount; }
+
+            public int Count { get { if (_throwOnCount) throw new InvalidOperationException("collection was modified"); return 2; } }
+            public IEnumerator<MemoryAllocation> GetEnumerator() { throw new InvalidOperationException("collection was modified"); }
+            System.Collections.IEnumerator System.Collections.IEnumerable.GetEnumerator() { return GetEnumerator(); }
+            public bool IsReadOnly { get { return true; } }
+            public MemoryAllocation this[int index] { get { throw new InvalidOperationException(); } set { throw new InvalidOperationException(); } }
+            public void Add(MemoryAllocation item) { throw new NotSupportedException(); }
+            public void Clear() { throw new NotSupportedException(); }
+            public bool Contains(MemoryAllocation item) { return false; }
+            public void CopyTo(MemoryAllocation[] array, int arrayIndex) { throw new NotSupportedException(); }
+            public bool Remove(MemoryAllocation item) { throw new NotSupportedException(); }
+            public int IndexOf(MemoryAllocation item) { return -1; }
+            public void Insert(int index, MemoryAllocation item) { throw new NotSupportedException(); }
+            public void RemoveAt(int index) { throw new NotSupportedException(); }
+        }
+
+        // The Windows original wraps ValidateAllocation in try/catch: the UI calls it every tick and must never crash.
+        private static void ValidationNeverThrowsCases()
+        {
+            List<string> a = null, b = null;
+            bool threw = false;
+            try
+            {
+                a = MemoryPolicy.ValidateAllocation(new ThrowingList(false), Ram(16), 2, 8.0);
+                b = MemoryPolicy.ValidateAllocation(new ThrowingList(true), Ram(16), 2, 8.0);
+            }
+            catch (Exception) { threw = true; }
+            T.Check("ValidateAllocation does not throw when the list fails while enumerating or counting", !threw && a != null && b != null && a.Count == 0 && b.Count == 0, threw ? "threw" : "ok");
+
+            List<MemoryAllocation> withNull = new List<MemoryAllocation> { null, Alloc(1, MemoryPreset.Custom, 300, "X") };
+            List<string> w = MemoryPolicy.ValidateAllocation(withNull, Ram(16), 2, 8.0);
+            T.Check("a null item is skipped and the rest is still checked (300 MB is below the safe minimum)", w.Count >= 1 && w[0].Contains("300 MB"), w.Count > 0 ? w[0] : "no warnings");
+        }
+
         public static void Run()
         {
+            ValidationNeverThrowsCases();
             // Budget = max(2048, (RamGb - 3) * 1024).
             T.Check("budget floor at 4 GB", MemoryPolicy.BudgetMb(Ram(4)) == 2048, "got " + MemoryPolicy.BudgetMb(Ram(4)));
             T.Check("budget floor at 2 GB", MemoryPolicy.BudgetMb(Ram(2)) == 2048);

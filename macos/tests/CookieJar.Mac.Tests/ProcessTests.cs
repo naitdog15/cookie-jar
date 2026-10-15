@@ -144,6 +144,18 @@ namespace CookieJar.Tests
             T.Check("IsRunning false for an absent pid", !svc.IsRunning(999));
             T.Check("IsRunning false for pid 0", !svc.IsRunning(0));
 
+            // A zombie (exited, not yet reaped) still answers kill(pid, 0) but the contract says it is not running.
+            var zombieNative = new FakeMacNative();
+            zombieNative.Alive.Add(120);
+            FakeCommandRunner zombiePs = new FakeCommandRunner { Next = new CommandResult(0, "Z+\n", "", false, false) };
+            T.Check("IsRunning false for a zombie (ps state Z)", !Service(zombiePs, zombieNative).IsRunning(120));
+            T.Check("IsRunning asks ps for the state of that pid only",
+                zombiePs.Arguments.Count == 1 && string.Join(" ", zombiePs.Arguments[0]) == "-o stat= -p 120", zombiePs.Arguments.Count == 0 ? "no call" : string.Join(" ", zombiePs.Arguments[0]));
+            FakeCommandRunner sleepingPs = new FakeCommandRunner { Next = new CommandResult(0, "S\n", "", false, false) };
+            T.Check("IsRunning true for a sleeping process (ps state S)", Service(sleepingPs, zombieNative).IsRunning(120));
+            FakeCommandRunner brokenPs = new FakeCommandRunner { Next = new CommandResult(-1, "", "no ps", false, true) };
+            T.Check("IsRunning still true when ps itself fails (kill(pid,0) is the fallback)", Service(brokenPs, zombieNative).IsRunning(120));
+
             T.Check("working set is rss in bytes", svc.GetWorkingSetBytes(120) == 5242880L, svc.GetWorkingSetBytes(120).ToString());
             T.Check("working set is -1 for an absent pid (contract)", svc.GetWorkingSetBytes(999) == -1L);
 

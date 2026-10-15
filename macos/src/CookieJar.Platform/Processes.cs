@@ -12,7 +12,11 @@ namespace CookieJar.Platform
         /// <summary>True if the pid is alive (not a zombie/exited).</summary>
         bool IsRunning(int pid);
 
-        /// <summary>Resident memory in bytes, or -1 if unknown or the process is gone.</summary>
+        /// <summary>
+        /// Resident memory in bytes, or -1 if unknown or the process is gone. The Windows app told "exited" from
+        /// "could not read" with a three-state result; here, call IsRunning(pid) after a -1: false means it exited
+        /// (mark the instance Stopped), true means the value is only unreadable (keep the last known value).
+        /// </summary>
         long GetWorkingSetBytes(int pid);
 
         /// <summary>Pids whose executable name equals <paramref name="processName"/> (case-insensitive, no extension, e.g. "RobloxPlayerBeta").</summary>

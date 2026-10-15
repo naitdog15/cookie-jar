@@ -100,10 +100,28 @@ namespace CookieJar.Platform.Mac
                    url.StartsWith("roblox-player:", StringComparison.OrdinalIgnoreCase);
         }
 
+        // One launch at a time: the new client is recognised as "a pid that was not there before", which is only
+        // unambiguous while no other launch of ours is in flight. Pids already handed to an earlier launch are never
+        // handed out again, so a slow-starting earlier client cannot be mistaken for the next one.
+        // MAC-UNVERIFIED: a Roblox client the user starts by hand during the wait can still be picked up (no launch id).
+        private readonly object launchLock = new object();
+        private readonly HashSet<int> claimed = new HashSet<int>();
+
         private LaunchResult StartAndWait(IReadOnlyList<string> openArguments, int timeoutMs)
         {
+            lock (launchLock)
+            {
+                return StartAndWaitLocked(openArguments, timeoutMs);
+            }
+        }
+
+        private LaunchResult StartAndWaitLocked(IReadOnlyList<string> openArguments, int timeoutMs)
+        {
             string name = locator.PlayerProcessName;
-            var before = new HashSet<int>(procs.FindByName(name) ?? new List<int>());
+            var running = new HashSet<int>(procs.FindByName(name) ?? new List<int>());
+            claimed.IntersectWith(running);   // forget claimed pids that have exited
+            var before = new HashSet<int>(running);
+            before.UnionWith(claimed);
 
             CommandResult open = runner.Run(OpenPath, openArguments, OpenTimeoutMs);
             if (open == null) return Fail("open did not run.");
@@ -118,7 +136,11 @@ namespace CookieJar.Platform.Mac
             {
                 foreach (int pid in procs.FindByName(name) ?? new List<int>())
                 {
-                    if (!before.Contains(pid)) return new LaunchResult(true, pid, null);
+                    if (!before.Contains(pid))
+                    {
+                        claimed.Add(pid);
+                        return new LaunchResult(true, pid, null);
+                    }
                 }
                 if (i < attempts - 1) sleep(pollMs);
             }

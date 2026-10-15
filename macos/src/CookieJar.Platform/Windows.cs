@@ -32,6 +32,16 @@ namespace CookieJar.Platform
     }
 
     /// <summary>
+    /// Optional companion of IWindowService: which process owns the frontmost window. Background CPU saving needs it
+    /// to keep the client in front at full speed. A window service that cannot tell simply does not implement it.
+    /// </summary>
+    public interface IForegroundProcessSource
+    {
+        /// <summary>Process id that owns the frontmost window, or 0 when there is none (or it is unknown).</summary>
+        int GetForegroundProcessId();
+    }
+
+    /// <summary>
     /// Window control. Window ids are opaque numbers (long), valid only while the window exists; never an OS handle type.
     /// Thread-safe. Without WindowPlacement all mutators return false and queries return empty/false.
     /// </summary>

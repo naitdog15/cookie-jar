@@ -54,11 +54,126 @@ namespace CookieJar.Tests
             return l;
         }
 
+        /// <summary>A window service that answers the foreground process question.</summary>
+        private sealed class FgWindows : IWindowService, IForegroundProcessSource
+        {
+            public int Foreground;
+            public int GetForegroundProcessId() { return Foreground; }
+            public IReadOnlyList<long> GetWindowsOfProcess(int pid) { return new long[0]; }
+            public long GetMainWindow(int pid) { return 0; }
+            public bool Exists(long windowId) { return false; }
+            public bool IsVisible(long windowId) { return false; }
+            public bool IsMinimised(long windowId) { return false; }
+            public bool Restore(long windowId) { return false; }
+            public bool Minimise(long windowId) { return false; }
+            public bool BringToFront(long windowId) { return false; }
+            public long GetForegroundWindow() { return 0; }
+            public bool TryGetBounds(long windowId, out ScreenRect bounds) { bounds = default(ScreenRect); return false; }
+            public bool TryGetContentBounds(long windowId, out ScreenRect bounds) { bounds = default(ScreenRect); return false; }
+            public bool SetBounds(long windowId, ScreenRect bounds) { return false; }
+            public IReadOnlyList<MonitorInfo> GetMonitors() { return new MonitorInfo[0]; }
+        }
+
+        /// <summary>A window service that cannot tell the foreground process (no IForegroundProcessSource).</summary>
+        private sealed class PlainWindows : IWindowService
+        {
+            public IReadOnlyList<long> GetWindowsOfProcess(int pid) { return new long[0]; }
+            public long GetMainWindow(int pid) { return 0; }
+            public bool Exists(long windowId) { return false; }
+            public bool IsVisible(long windowId) { return false; }
+            public bool IsMinimised(long windowId) { return false; }
+            public bool Restore(long windowId) { return false; }
+            public bool Minimise(long windowId) { return false; }
+            public bool BringToFront(long windowId) { return false; }
+            public long GetForegroundWindow() { return 0; }
+            public bool TryGetBounds(long windowId, out ScreenRect bounds) { bounds = default(ScreenRect); return false; }
+            public bool TryGetContentBounds(long windowId, out ScreenRect bounds) { bounds = default(ScreenRect); return false; }
+            public bool SetBounds(long windowId, ScreenRect bounds) { return false; }
+            public IReadOnlyList<MonitorInfo> GetMonitors() { return new MonitorInfo[0]; }
+        }
+
+        private sealed class PlatformWithWindows : IPlatform
+        {
+            private readonly IWindowService _windows;
+            public PlatformWithWindows(IWindowService windows) { _windows = windows; }
+            public PlatformCapabilities Capabilities { get { return PlatformCapabilities.None; } }
+            public string Name { get { return "Test"; } }
+            public IProcessService Processes { get { return null; } }
+            public IRobloxLocator RobloxLocator { get { return null; } }
+            public IRobloxLauncher RobloxLauncher { get { return null; } }
+            public ISecretStore Secrets { get { return null; } }
+            public IWindowService Windows { get { return _windows; } }
+            public IInputService Input { get { return null; } }
+            public IScreenCapture ScreenCapture { get { return null; } }
+            public IOcrService Ocr { get { return null; } }
+            public IStartupService Startup { get { return null; } }
+            public IAppPaths Paths { get { return null; } }
+            public IShellService Shell { get { return null; } }
+        }
+
+        // The foreground client must never be slowed down: an unknown foreground means "slow nothing".
+        private static void ForegroundSourceCases()
+        {
+            const int mine = 7001, other = 7002;
+            DateTime now = new DateTime(2026, 10, 15, 12, 0, 0, DateTimeKind.Utc);
+            DateTime old = now.AddSeconds(-(BackgroundEfficiency.GraceSeconds + 5));
+            List<EfficiencyTarget> two = One(mine, true, old);
+            two.AddRange(One(other, true, old));
+
+            FakeProcessService svc = new FakeProcessService();
+            BackgroundEfficiency unwired = new BackgroundEfficiency(svc);
+            unwired.Update(two, now);
+            T.Check("efficiency: with no foreground source wired nothing is slowed (the default is unknown)",
+                BackgroundEfficiency.DefaultForegroundPid() < 0 && !unwired.IsThrottled(mine) && !unwired.IsThrottled(other) && svc.SetCalls == 0);
+
+            FakeProcessService svc2 = new FakeProcessService();
+            BackgroundEfficiency wired = new BackgroundEfficiency(svc2);
+            FgWindows windows = new FgWindows { Foreground = mine };
+            wired.ForegroundPid = BackgroundEfficiency.ForegroundFrom(new PlatformWithWindows(windows));
+            wired.Update(two, now);
+            T.Check("efficiency: the platform foreground process is exempt and the other client is slowed",
+                !wired.IsThrottled(mine) && wired.IsThrottled(other) && !svc2.IsLowered(mine) && svc2.IsLowered(other));
+
+            windows.Foreground = other;
+            wired.Update(two, now);
+            T.Check("efficiency: when focus moves, the slowed client is restored and the new background one is slowed",
+                wired.IsThrottled(mine) && !wired.IsThrottled(other) && svc2.IsLowered(mine) && !svc2.IsLowered(other));
+
+            windows.Foreground = 0;
+            wired.Update(two, now);
+            T.Check("efficiency: no foreground window (0) means every client is background", wired.IsThrottled(mine) && wired.IsThrottled(other));
+
+            FakeProcessService svc3 = new FakeProcessService();
+            BackgroundEfficiency plain = new BackgroundEfficiency(svc3);
+            plain.ForegroundPid = BackgroundEfficiency.ForegroundFrom(new PlatformWithWindows(new PlainWindows()));
+            plain.Update(two, now);
+            T.Check("efficiency: a window service that cannot tell the foreground process slows nothing",
+                !plain.IsThrottled(mine) && !plain.IsThrottled(other) && svc3.SetCalls == 0);
+
+            BackgroundEfficiency noPlatform = new BackgroundEfficiency(new FakeProcessService());
+            noPlatform.ForegroundPid = BackgroundEfficiency.ForegroundFrom(null);
+            noPlatform.Update(two, now);
+            T.Check("efficiency: a null platform slows nothing", noPlatform.ThrottledCount == 0);
+
+            // The source goes away after clients were slowed: they are restored, not left slow.
+            FakeProcessService svc4 = new FakeProcessService();
+            BackgroundEfficiency lost = new BackgroundEfficiency(svc4);
+            int answer = 0;
+            lost.ForegroundPid = delegate { return answer; };
+            lost.Update(two, now);
+            answer = -1;
+            lost.Update(two, now);
+            T.Check("efficiency: when the foreground becomes unknown, slowed clients are restored",
+                lost.ThrottledCount == 0 && !svc4.IsLowered(mine) && !svc4.IsLowered(other));
+        }
+
         public static void Run()
         {
             const int pid = 4242;
             DateTime now = new DateTime(2026, 10, 15, 12, 0, 0, DateTimeKind.Utc);
             DateTime old = now.AddSeconds(-(BackgroundEfficiency.GraceSeconds + 5));
+
+            ForegroundSourceCases();
 
             FakeProcessService fake = new FakeProcessService();
             BackgroundEfficiency be = new BackgroundEfficiency(fake);

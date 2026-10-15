@@ -27,7 +27,9 @@ namespace CookieJar.AppModel
         /// <summary>The restriction forbids another client. Stops the run.</summary>
         Blocked,
         /// <summary>The user declined a resource warning. Stops the run.</summary>
-        Declined
+        Declined,
+        /// <summary>Cancelled before or while starting. Stops the run.</summary>
+        Cancelled
     }
 
     public sealed class AccountReport
@@ -121,35 +123,45 @@ namespace CookieJar.AppModel
             return accepted ? LaunchAction.Launch : LaunchAction.ConfirmWarn;
         }
 
-        /// <summary>Starts one account after the restriction check. Already-running accounts are started anyway.</summary>
-        public LaunchReport LaunchSingle(LaunchAccount account, Func<string, LaunchResult> launchOne,
-            CancellationToken ct = default(CancellationToken))
+        /// <summary>
+        /// Starts one account after the restriction check. Already-running accounts are started anyway.
+        /// profile supplies the profile name and place id for the request (its PlaceId must already be the selected
+        /// game); null uses a "Single launch" profile on the default game.
+        /// </summary>
+        public LaunchReport LaunchSingle(LaunchAccount account, LaunchProfile profile,
+            Func<LaunchRequest, AccountLaunchResult> launchOne, CancellationToken ct = default(CancellationToken))
         {
             CheckArgs(account, launchOne);
             List<AccountReport> reports = new List<AccountReport>();
             if (ct.IsCancellationRequested) return Finish(reports, true);
 
-            bool warnAccepted;
-            AccountReport report = LaunchAccountOnce(account, SingleWarnSuffix, false, launchOne, out warnAccepted);
+            string profileName = profile != null && !string.IsNullOrEmpty(profile.Name) ? profile.Name : "Single launch";
+            long placeId = profile != null ? profile.PlaceId : CookieJar.Core.LaunchProfile.DefaultPlaceId;
+
+            bool warnAccepted, invoked;
+            AccountReport report = LaunchAccountOnce(account, SingleWarnSuffix, false, profileName, placeId, true, launchOne, ct,
+                out warnAccepted, out invoked);
             reports.Add(report);
             if (report.Outcome == AccountOutcome.Blocked) Log("Launch not allowed: " + report.Message);
-            bool stopped = report.Outcome == AccountOutcome.Blocked || report.Outcome == AccountOutcome.Declined;
+            bool stopped = report.Outcome == AccountOutcome.Blocked || report.Outcome == AccountOutcome.Declined
+                || report.Outcome == AccountOutcome.Cancelled;
             return Finish(reports, stopped);
         }
 
         /// <summary>Starts one account again. Same checks as LaunchSingle.</summary>
-        public LaunchReport Relaunch(LaunchAccount account, Func<string, LaunchResult> launchOne,
-            CancellationToken ct = default(CancellationToken))
+        public LaunchReport Relaunch(LaunchAccount account, LaunchProfile profile,
+            Func<LaunchRequest, AccountLaunchResult> launchOne, CancellationToken ct = default(CancellationToken))
         {
-            return LaunchSingle(account, launchOne, ct);
+            return LaunchSingle(account, profile, launchOne, ct);
         }
 
         /// <summary>
-        /// Starts the accounts one after another. Accounts already running are skipped. A blocked restriction or
-        /// a declined warning stops the run. Cancel is honoured before each account and during the stagger.
+        /// Starts the accounts one after another. Accounts already running are skipped. A blocked restriction, a
+        /// declined warning or a cancel stops the run. Cancel is honoured before each account, after the warning
+        /// question, while an account starts (through the request's token) and during the stagger.
         /// </summary>
         public LaunchReport LaunchProfile(LaunchProfile profile, IList<LaunchAccount> accounts,
-            Func<string, LaunchResult> launchOne, CancellationToken ct = default(CancellationToken))
+            Func<LaunchRequest, AccountLaunchResult> launchOne, CancellationToken ct = default(CancellationToken))
         {
             if (profile == null) throw new ArgumentNullException(nameof(profile));
             if (accounts == null) throw new ArgumentNullException(nameof(accounts));
@@ -159,6 +171,7 @@ namespace CookieJar.AppModel
             List<AccountReport> reports = new List<AccountReport>();
             bool stopped = false;
             bool warnConfirmed = false;
+            bool cacheHandled = false;
 
             for (int i = 0; i < total && !stopped; i++)
             {
@@ -179,8 +192,10 @@ namespace CookieJar.AppModel
                     continue;
                 }
 
-                bool warnAccepted;
-                AccountReport report = LaunchAccountOnce(account, ProfileWarnSuffix, warnConfirmed, launchOne, out warnAccepted);
+                bool warnAccepted, invoked;
+                AccountReport report = LaunchAccountOnce(account, ProfileWarnSuffix, warnConfirmed, profile.Name, profile.PlaceId,
+                    !cacheHandled, launchOne, ct, out warnAccepted, out invoked);
+                if (invoked) cacheHandled = true;   // like the Windows runner: only the first launch may clear the cache
                 reports.Add(report);
                 warnConfirmed = warnConfirmed || warnAccepted;
 
@@ -193,6 +208,11 @@ namespace CookieJar.AppModel
                 if (report.Outcome == AccountOutcome.Declined)
                 {
                     Log("Profile launch stopped at your request (warning declined)");
+                    stopped = true;
+                    break;
+                }
+                if (report.Outcome == AccountOutcome.Cancelled)
+                {
                     stopped = true;
                     break;
                 }
@@ -220,9 +240,11 @@ namespace CookieJar.AppModel
         }
 
         private AccountReport LaunchAccountOnce(LaunchAccount account, string warningSuffix, bool warnConfirmed,
-            Func<string, LaunchResult> launchOne, out bool warnAccepted)
+            string profileName, long placeId, bool clearCache, Func<LaunchRequest, AccountLaunchResult> launchOne,
+            CancellationToken ct, out bool warnAccepted, out bool invoked)
         {
             warnAccepted = false;
+            invoked = false;
             string who = account.DisplayName;
 
             LaunchAction action = CheckRestriction(warningSuffix, warnConfirmed);
@@ -236,18 +258,64 @@ namespace CookieJar.AppModel
             }
             warnAccepted = LastRestriction.Level == RestrictLevel.Warn;
 
-            // MAC-UNVERIFIED: launchOne is assumed to start the client through IRobloxLauncher on macOS; not run on a Mac yet.
-            LaunchResult result = launchOne(account.Id);
-            if (result != null && result.Started)
+            // The warning question can take seconds: a cancel pressed meanwhile must stop before anything starts.
+            if (ct.IsCancellationRequested)
             {
-                Log(who + ": ok");
-                return new AccountReport(account, AccountOutcome.Launched, null);
+                Log(who + ": cancelled");
+                return new AccountReport(account, AccountOutcome.Cancelled, null);
             }
 
-            string error = result == null || result.Error == null ? "no answer from the launcher" : result.Error;
-            string text = who + ": could not start Roblox: " + error;
-            Log(text);
-            return new AccountReport(account, AccountOutcome.Failed, text);
+            // MAC-UNVERIFIED: launchOne is assumed to start the client through IRobloxLauncher on macOS; not run on a Mac yet.
+            invoked = true;
+            AccountLaunchResult result;
+            try
+            {
+                result = launchOne(new LaunchRequest(account, profileName, placeId, LaunchRequest.DefaultTimeoutSeconds, ct, clearCache));
+            }
+            catch (OperationCanceledException)
+            {
+                result = AccountLaunchResult.Cancelled();
+            }
+            catch (Exception ex)
+            {
+                result = AccountLaunchResult.Failed(ex.Message);
+            }
+            if (result == null) result = AccountLaunchResult.Failed("no answer from the launcher");
+
+            switch (result.Kind)
+            {
+                case AccountLaunchKind.Ok:
+                    Log(who + ": ok");
+                    return new AccountReport(account, AccountOutcome.Launched, null);
+
+                case AccountLaunchKind.TicketFailed:
+                {
+                    string text = who + ": ticket failed: " + result.Message;
+                    Log(text);
+                    if (result.TokenExpired && Events.AccountTokenExpired != null) Events.AccountTokenExpired(account.Id);
+                    return new AccountReport(account, AccountOutcome.Failed, text);
+                }
+
+                case AccountLaunchKind.TimedOut:
+                {
+                    string text = who + ": timed out - no new Roblox window within " + LaunchRequest.DefaultTimeoutSeconds
+                        + " seconds (if it appears later, use Adopt running clients)";
+                    Log(text);
+                    return new AccountReport(account, AccountOutcome.Failed, text);
+                }
+
+                case AccountLaunchKind.Cancelled:
+                    Log(who + ": cancelled");
+                    return new AccountReport(account, AccountOutcome.Cancelled, null);
+
+                default:
+                {
+                    string error = result.Message == null ? "no answer from the launcher" : result.Message;
+                    string text = who + ": could not start Roblox: " + error;
+                    Log(text);
+                    return new AccountReport(account, AccountOutcome.Failed, text);
+                }
+            }
         }
 
         private bool Countdown(int launched, int total, int seconds, CancellationToken ct)
@@ -281,7 +349,9 @@ namespace CookieJar.AppModel
         private bool Ask(string message)
         {
             Func<string, bool> confirm = Events.ConfirmWarning;
-            return confirm == null || confirm(message);
+            // No handler means nobody can be asked, so the warning is not accepted: stop rather than launch past it
+            // (the Windows runner always has a confirmation callback).
+            return confirm != null && confirm(message);
         }
 
         private void Log(string text)
@@ -294,7 +364,7 @@ namespace CookieJar.AppModel
             if (sink != null) sink(text);
         }
 
-        private static void CheckArgs(LaunchAccount account, Func<string, LaunchResult> launchOne)
+        private static void CheckArgs(LaunchAccount account, Func<LaunchRequest, AccountLaunchResult> launchOne)
         {
             if (account == null) throw new ArgumentNullException(nameof(account));
             if (launchOne == null) throw new ArgumentNullException(nameof(launchOne));

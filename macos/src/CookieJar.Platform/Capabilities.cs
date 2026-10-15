@@ -28,7 +28,13 @@ namespace CookieJar.Platform
         MultiInstance = 1 << 8
     }
 
-    /// <summary>Entry point to the OS services. Implementations are created once at startup.</summary>
+    /// <summary>
+    /// Entry point to the OS services. Implementations are created once at startup and live for the whole process:
+    /// create the platform once and share it, do not create one per call. Unless a member says otherwise, every service
+    /// may be called from any thread, but callers should not run several input or window-moving actions at once (they
+    /// act on one shared screen and cursor); a service that is not supported is still non-null and reports it through
+    /// Capabilities.
+    /// </summary>
     public interface IPlatform
     {
         /// <summary>Short OS name, e.g. "Windows" or "macOS".</summary>

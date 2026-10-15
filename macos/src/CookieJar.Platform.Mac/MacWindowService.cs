@@ -30,11 +30,13 @@ namespace CookieJar.Platform.Mac
     }
 
     /// <summary>
-    /// Window control and display layout on macOS, through System Events and NSScreen via osascript.
-    /// Window ids come from MacWindowParsing.EncodeWindowId. Never throws: failures return false, empty or 0.
-    /// Needs Automation permission for System Events and Accessibility for the host app.
+    /// Window control and display layout on macOS. Window ids are CGWindowIDs (see MacWindowParsing): stable while the
+    /// window exists and the same number `screencapture -l` takes. State is read with CGWindowListCopyWindowInfo through
+    /// `osascript -l JavaScript`; raise, minimise and move go through System Events, which finds the window by process
+    /// and current position. Never throws: failures return false, empty or 0.
+    /// Needs Automation permission for System Events (actions only) and Accessibility for the host app.
     /// </summary>
-    public sealed class MacWindowService : IWindowService
+    public sealed class MacWindowService : IWindowService, IForegroundProcessSource
     {
         // MAC-UNVERIFIED: System Events can block on an Automation consent prompt; the timeout only stops a hang.
         internal const int ScriptTimeoutMs = 10000;
@@ -42,6 +44,8 @@ namespace CookieJar.Platform.Mac
         private readonly ICommandRunner _runner;
         private readonly Func<int, IReadOnlyList<int>> _pidsProvider;
         private readonly IMacScreenSource _screens;
+        private readonly object _sync = new object();
+        private readonly Dictionary<long, int> _pidOf = new Dictionary<long, int>();   // window id -> owner pid seen last
 
         /// <param name="pidsProvider">Optional: extra pids whose windows count as belonging to a pid (e.g. helper processes).</param>
         /// <param name="screens">Optional display source; defaults to osascript.</param>
@@ -62,8 +66,9 @@ namespace CookieJar.Platform.Mac
                 {
                     foreach (MacWindowRow row in ReadWindows(candidate))
                     {
-                        long id = MacWindowParsing.EncodeWindowId(candidate, row.Index);
-                        if (id != 0) ids.Add(id);
+                        if (!row.IsAppWindow) continue;
+                        Remember(row);
+                        ids.Add(row.Id);
                     }
                 }
             }
@@ -75,14 +80,18 @@ namespace CookieJar.Platform.Mac
         {
             try
             {
-                List<MacWindowRow> rows = ReadWindows(pid);
-                MacWindowRow pick = null;
-                foreach (MacWindowRow row in rows)
+                // CGWindowList is ordered front to back, so the first on-screen window is the frontmost one.
+                MacWindowRow first = null, pick = null;
+                foreach (MacWindowRow row in ReadWindows(pid))
                 {
-                    if (row.Index == 1 && !row.Minimised) { pick = row; break; }
+                    if (!row.IsAppWindow) continue;
+                    if (first == null) first = row;
+                    if (pick == null && row.OnScreen) pick = row;
                 }
-                if (pick == null && rows.Count > 0) pick = rows[0];
-                return pick == null ? 0 : MacWindowParsing.EncodeWindowId(pid, pick.Index);
+                if (pick == null) pick = first;
+                if (pick == null) return 0;
+                Remember(pick);
+                return pick.Id;
             }
             catch (Exception)
             {
@@ -98,13 +107,14 @@ namespace CookieJar.Platform.Mac
         public bool IsVisible(long windowId)
         {
             MacWindowRow row = FindRow(windowId);
-            return row != null && row.Visible;
+            return row != null && row.OnScreen;
         }
 
+        // MAC-UNVERIFIED: CGWindowList cannot tell "minimised" from "on another Space"; both read as not on screen.
         public bool IsMinimised(long windowId)
         {
             MacWindowRow row = FindRow(windowId);
-            return row != null && row.Minimised;
+            return row != null && !row.OnScreen;
         }
 
         public bool Restore(long windowId)
@@ -121,9 +131,9 @@ namespace CookieJar.Platform.Mac
         {
             try
             {
-                int pid, index;
-                if (!MacWindowParsing.DecodeWindowId(windowId, out pid, out index)) return false;
-                return RunAppleScript(MacWindowParsing.RaiseScript(pid, index)).Success;
+                MacWindowRow row = FindRow(windowId);
+                if (row == null) return false;
+                return RunAppleScript(MacWindowParsing.RaiseScript(row.Pid, row.Bounds)).Success;
             }
             catch (Exception)
             {
@@ -135,10 +145,22 @@ namespace CookieJar.Platform.Mac
         {
             try
             {
+                int pid = GetForegroundProcessId();
+                return pid == 0 ? 0 : GetMainWindow(pid);
+            }
+            catch (Exception)
+            {
+                return 0;
+            }
+        }
+
+        /// <summary>Process id of the frontmost application, or 0 when unknown.</summary>
+        public int GetForegroundProcessId()
+        {
+            try
+            {
                 CommandResult r = RunAppleScript(MacWindowParsing.FrontmostProcessScript());
-                if (!r.Success) return 0;
-                int pid = MacWindowParsing.ParsePid(r.StandardOutput);
-                return pid == 0 ? 0 : MacWindowParsing.EncodeWindowId(pid, 1);
+                return r.Success ? MacWindowParsing.ParsePid(r.StandardOutput) : 0;
             }
             catch (Exception)
             {
@@ -166,16 +188,17 @@ namespace CookieJar.Platform.Mac
         {
             bounds = default(ScreenRect);
             ScreenRect frame;
-            return TryGetBounds(windowId, out frame) && MacWindowParsing.ToContentBounds(frame, out bounds);
+            if (!TryGetBounds(windowId, out frame)) return false;
+            return MacWindowParsing.ToContentBounds(frame, GetMonitors(), out bounds);
         }
 
         public bool SetBounds(long windowId, ScreenRect bounds)
         {
             try
             {
-                int pid, index;
-                if (!MacWindowParsing.DecodeWindowId(windowId, out pid, out index)) return false;
-                return RunAppleScript(MacWindowParsing.SetBoundsScript(pid, index, bounds)).Success;
+                MacWindowRow row = FindRow(windowId);
+                if (row == null) return false;
+                return RunAppleScript(MacWindowParsing.SetBoundsScript(row.Pid, row.Bounds, bounds)).Success;
             }
             catch (Exception)
             {
@@ -201,9 +224,9 @@ namespace CookieJar.Platform.Mac
         {
             try
             {
-                int pid, index;
-                if (!MacWindowParsing.DecodeWindowId(windowId, out pid, out index)) return false;
-                return RunAppleScript(MacWindowParsing.SetMinimisedScript(pid, index, minimised)).Success;
+                MacWindowRow row = FindRow(windowId);
+                if (row == null) return false;
+                return RunAppleScript(MacWindowParsing.SetMinimisedScript(row.Pid, row.Bounds, minimised)).Success;
             }
             catch (Exception)
             {
@@ -211,17 +234,22 @@ namespace CookieJar.Platform.Mac
             }
         }
 
+        /// <summary>The current row of a window, or null when it no longer exists. Looks in the owner's windows first.</summary>
         private MacWindowRow FindRow(long windowId)
         {
             try
             {
-                int pid, index;
-                if (!MacWindowParsing.DecodeWindowId(windowId, out pid, out index)) return null;
-                foreach (MacWindowRow row in ReadWindows(pid))
+                if (!MacWindowParsing.IsValidWindowId(windowId)) return null;
+                int pid;
+                lock (_sync) { if (!_pidOf.TryGetValue(windowId, out pid)) pid = 0; }
+                if (pid > 0)
                 {
-                    if (row.Index == index) return row;
+                    MacWindowRow known = Pick(ReadWindows(pid), windowId);
+                    if (known != null) return known;
                 }
-                return null;
+                MacWindowRow any = Pick(ReadWindows(0), windowId);   // not seen yet (or moved owner): scan every process
+                if (any == null) Forget(windowId);
+                return any;
             }
             catch (Exception)
             {
@@ -229,11 +257,32 @@ namespace CookieJar.Platform.Mac
             }
         }
 
+        private MacWindowRow Pick(List<MacWindowRow> rows, long windowId)
+        {
+            foreach (MacWindowRow row in rows)
+            {
+                if (row.Id == windowId) { Remember(row); return row; }
+            }
+            return null;
+        }
+
+        private void Remember(MacWindowRow row)
+        {
+            lock (_sync) { _pidOf[row.Id] = row.Pid; }
+        }
+
+        private void Forget(long windowId)
+        {
+            lock (_sync) { _pidOf.Remove(windowId); }
+        }
+
+        /// <summary>Windows of one process; pid 0 lists every process; a negative pid lists nothing.</summary>
         private List<MacWindowRow> ReadWindows(int pid)
         {
             var rows = new List<MacWindowRow>();
-            if (pid <= 0) return rows;
-            CommandResult r = RunAppleScript(MacWindowParsing.WindowsScript(pid));
+            if (pid < 0) return rows;
+            CommandResult r = _runner.Run("osascript",
+                new List<string> { "-l", "JavaScript", "-e", MacWindowParsing.WindowsScript(pid) }, ScriptTimeoutMs);
             if (!r.Success) return rows;
             return MacWindowParsing.ParseWindowRows(r.StandardOutput);
         }

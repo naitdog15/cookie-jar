@@ -58,7 +58,7 @@ namespace CookieJar.Tests
             var windows = new InputFakeWindows(log) { Foreground = 42 };
             windows.Existing.Add(42);
             var svc = new MacInputService(native, windows);
-            long id = MacWindowParsing.EncodeWindowId(1234, 3);
+            long id = 5003L;
 
             int x, y;
             var results = new List<bool>
@@ -108,7 +108,7 @@ namespace CookieJar.Tests
             var windows = new InputFakeWindows(log) { Foreground = 42 };
             windows.Existing.Add(42);
             var svc = new MacInputService(native, windows);
-            long id = MacWindowParsing.EncodeWindowId(1234, 3);
+            long id = 5003L;
 
             bool ok = svc.ClickInWindow(id, 10, 20, MouseButton.Left, 40, 500);
             string expected = "front:" + id + ";move:110,220;down:0@110,220;up:0@110,220;move:5,6;front:42";
@@ -125,7 +125,7 @@ namespace CookieJar.Tests
             var windows = new InputFakeWindows(log) { Foreground = 42, Minimised = true };
             windows.Existing.Add(42);
             var svc = new MacInputService(native, windows);
-            long id = MacWindowParsing.EncodeWindowId(1234, 3);
+            long id = 5003L;
 
             bool ok = svc.ClickInWindow(id, 10, 20, MouseButton.Left, 40, 500);
             string expected = "restore:" + id + ";front:" + id + ";move:110,220;down:0@110,220;up:0@110,220;move:5,6;min:" + id + ";front:42";
@@ -140,7 +140,7 @@ namespace CookieJar.Tests
             var windows = new InputFakeWindows(log) { Foreground = 42 };
             windows.Existing.Add(42);
             var svc = new MacInputService(native, windows);
-            long id = MacWindowParsing.EncodeWindowId(1234, 3);
+            long id = 5003L;
 
             bool ok = svc.TapKeyInWindow(id, 0x41, 60, 500);
             string expected = "front:" + id + ";key:down:0;key:up:0;front:42";
@@ -157,7 +157,7 @@ namespace CookieJar.Tests
             var native = new InputFakeNative(log) { Trusted = true };
             var svc = new MacInputService(native, null);
             T.Check("ClickInWindow without a window service is false and posts nothing",
-                !svc.ClickInWindow(MacWindowParsing.EncodeWindowId(1234, 1), 1, 1, MouseButton.Left, 10, 10) && native.PostCount == 0);
+                !svc.ClickInWindow(5001L, 1, 1, MouseButton.Left, 10, 10) && native.PostCount == 0);
         }
 
         /// <summary>Records every call in a shared log so window and input order can be asserted together.</summary>

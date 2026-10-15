@@ -60,9 +60,9 @@ namespace CookieJar.Platform.Mac
                 FileStream stream;
                 if (!_locks.TryGetValue(safe, out stream)) return;
                 _locks.Remove(safe);
+                // Release the lock but leave the file: deleting it after releasing lets a second process take the lock on
+                // the old file while a third creates and locks a new one, so two copies could both believe they own it.
                 try { stream.Dispose(); }
-                catch (Exception) { }
-                try { File.Delete(Path.Combine(_lockDirectory, safe + ".lock")); }
                 catch (Exception) { }
             }
         }

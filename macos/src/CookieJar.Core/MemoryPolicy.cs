@@ -88,6 +88,10 @@ namespace CookieJar.Core
         public static List<string> ValidateAllocation(IList<MemoryAllocation> items, HardwareProfile hardware, int instanceCount, double freeRamGb)
         {
             List<string> warnings = new List<string>();
+            // Like the Windows original: the UI calls this every tick, so a misbehaving list or item must never throw;
+            // whatever was found before the problem is returned.
+            try
+            {
             if (items == null || items.Count == 0) return warnings;
 
             int count = ClampInt(instanceCount, CountMin, CountMax);
@@ -126,6 +130,10 @@ namespace CookieJar.Core
                 warnings.Add(string.Format(CultureInfo.InvariantCulture,
                     "Combined caps of {0} MB exceed the safe budget of {1:0} MB (installed RAM minus {2:0.0} GB reserved for Windows).",
                     totalMb, budgetMb, reserveGb));
+            }
+            }
+            catch (Exception)
+            {
             }
 
             return warnings;

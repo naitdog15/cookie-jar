@@ -63,7 +63,11 @@ namespace CookieJar.Platform
         /// </summary>
         bool PrepareForAnotherInstance();
 
-        /// <summary>Applies the single-instance workaround to one running client. Returns the number of locks released.</summary>
+        /// <summary>
+        /// Applies the single-instance workaround to one running client. Returns the number of locks released.
+        /// Single-instance handles are a Windows concept: other platforms return 0, and whether several clients can run
+        /// side by side is reported by PrepareForAnotherInstance and the MultiInstance capability instead.
+        /// </summary>
         int ReleaseSingleInstanceLock(int pid);
 
         /// <summary>Number of single-instance locks still held by pid (0 when none or unsupported).</summary>

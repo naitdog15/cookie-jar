@@ -60,15 +60,21 @@ namespace CookieJar.Platform.Mac
         private readonly ICommandRunner _runner;
         private readonly IMacCaptureTemp _temp;
         private readonly Func<PermissionState> _permission;
+        private readonly IWindowService _windows;
 
-        /// <summary>Permission defaults to the Screen Recording preflight check (Unknown when it cannot run).</summary>
-        public MacScreenCapture(ICommandRunner runner, IMacCaptureTemp temp, Func<PermissionState> permission)
+        /// <summary>
+        /// Permission defaults to the Screen Recording preflight check (Unknown when it cannot run). With a window
+        /// service, CaptureWindow crops the title bar so the result is the window content, as the contract says;
+        /// without one it returns the whole window (title bar included).
+        /// </summary>
+        public MacScreenCapture(ICommandRunner runner, IMacCaptureTemp temp, Func<PermissionState> permission, IWindowService windows = null)
         {
             if (runner == null) throw new ArgumentNullException(nameof(runner));
             if (temp == null) throw new ArgumentNullException(nameof(temp));
             _runner = runner;
             _temp = temp;
             _permission = permission ?? (() => ProbeScreenRecording());
+            _windows = windows;
         }
 
         public RawImage CaptureRegion(ScreenRect region)
@@ -79,9 +85,42 @@ namespace CookieJar.Platform.Mac
 
         public RawImage CaptureWindow(long windowId)
         {
-            // screencapture takes a 32-bit CGWindowID.
+            // screencapture takes a 32-bit CGWindowID, which is exactly what MacWindowService uses as window id.
             if (windowId <= 0 || windowId > uint.MaxValue) return null;
-            return CaptureWith("-l" + windowId.ToString(CultureInfo.InvariantCulture));
+            RawImage whole = CaptureWith("-l" + windowId.ToString(CultureInfo.InvariantCulture), true);
+            if (whole == null || _windows == null) return whole;
+
+            // The image is in pixels, the window bounds in points (2 px per point on Retina); crop to the content area.
+            // MAC-UNVERIFIED: with -o (no shadow) the image width is frame.Width * backing scale.
+            ScreenRect frame, content;
+            if (!_windows.TryGetBounds(windowId, out frame) || !_windows.TryGetContentBounds(windowId, out content) || frame.Width <= 0) return whole;
+            double scale = (double)whole.Width / frame.Width;
+            RawImage cropped = Crop(whole,
+                (int)Math.Round((content.X - frame.X) * scale), (int)Math.Round((content.Y - frame.Y) * scale),
+                (int)Math.Round(content.Width * scale), (int)Math.Round(content.Height * scale));
+            return cropped ?? whole;
+        }
+
+        /// <summary>A copy of the given pixel rectangle, clamped to the image. Null when nothing is left.</summary>
+        public static RawImage Crop(RawImage source, int x, int y, int width, int height)
+        {
+            if (source == null) return null;
+            if (x < 0) { width += x; x = 0; }
+            if (y < 0) { height += y; y = 0; }
+            if (x >= source.Width || y >= source.Height) return null;
+            if (width > source.Width - x) width = source.Width - x;
+            if (height > source.Height - y) height = source.Height - y;
+            if (width <= 0 || height <= 0) return null;
+            if (x == 0 && y == 0 && width == source.Width && height == source.Height) return source;
+
+            long rowBytes = (long)width * 4;
+            if (rowBytes > int.MaxValue || rowBytes * height > int.MaxValue) return null;
+            var pixels = new byte[rowBytes * height];
+            for (int row = 0; row < height; row++)
+            {
+                Buffer.BlockCopy(source.Pixels, source.OffsetOf(x, y + row), pixels, (int)(rowBytes * row), (int)rowBytes);
+            }
+            return new RawImage(width, height, (int)rowBytes, pixels);
         }
 
         public PermissionState GetPermissionState()
@@ -90,14 +129,17 @@ namespace CookieJar.Platform.Mac
             catch (Exception) { return PermissionState.Unknown; }
         }
 
-        private RawImage CaptureWith(string selector)
+        private RawImage CaptureWith(string selector, bool withoutShadow = false)
         {
             if (GetPermissionState() == PermissionState.Denied) return null;
             string path = null;
             try
             {
                 path = _temp.CreatePath();
-                var args = new List<string> { "-x", selector, "-t", "png", path };
+                // -o leaves the window shadow out, so the image is exactly the window (needed for the crop maths).
+                var args = withoutShadow
+                    ? new List<string> { "-x", "-o", selector, "-t", "png", path }
+                    : new List<string> { "-x", selector, "-t", "png", path };
                 CommandResult result = _runner.Run(Tool, args, CaptureTimeoutMs);
                 if (!result.Success) return null;
                 byte[] png;

@@ -3,7 +3,12 @@ using System.Collections.Generic;
 
 namespace CookieJar.Platform
 {
-    /// <summary>Pixel buffer, BGRA 8-bit per channel, top row first. Replaces System.Drawing.Bitmap.</summary>
+    /// <summary>
+    /// Pixel buffer, BGRA 8-bit per channel, top row first. Replaces System.Drawing.Bitmap.
+    /// Ownership: the image keeps the array it is given (no copy) and callers must not change it afterwards; consumers
+    /// treat Pixels as read-only. Take a copy before editing. Sizes are checked with 64-bit arithmetic, so absurd
+    /// dimensions are rejected instead of wrapping around.
+    /// </summary>
     public sealed class RawImage
     {
         public RawImage(int width, int height, int stride, byte[] pixels)
@@ -11,7 +16,7 @@ namespace CookieJar.Platform
             if (width < 0) throw new ArgumentOutOfRangeException(nameof(width));
             if (height < 0) throw new ArgumentOutOfRangeException(nameof(height));
             if (pixels == null) throw new ArgumentNullException(nameof(pixels));
-            if (stride < width * 4) throw new ArgumentException("stride too small", nameof(stride));
+            if (stride < (long)width * 4) throw new ArgumentException("stride too small", nameof(stride));
             if ((long)stride * height > pixels.Length) throw new ArgumentException("pixels too short", nameof(pixels));
             Width = width; Height = height; Stride = stride; Pixels = pixels;
         }
@@ -23,7 +28,7 @@ namespace CookieJar.Platform
         public byte[] Pixels { get; }
 
         /// <summary>Offset of pixel (x, y); channels are B, G, R, A.</summary>
-        public int OffsetOf(int x, int y) { return y * Stride + x * 4; }
+        public int OffsetOf(int x, int y) { return checked(y * Stride + x * 4); }
     }
 
     /// <summary>Screen/window capture. Without ScreenCapture, methods return null. May need a permission (macOS Screen Recording).</summary>

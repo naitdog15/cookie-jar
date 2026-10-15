@@ -143,7 +143,12 @@ namespace CookieJar.Platform.Mac
         {
             try
             {
-                return pid > 0 && native.IsAlive(pid);
+                if (pid <= 0 || !native.IsAlive(pid)) return false;
+                // kill(pid, 0) also succeeds for a zombie (exited, not yet reaped), which the contract counts as not running.
+                // MAC-UNVERIFIED: `ps -o stat= -p <pid>` prints the state; it starts with Z for a zombie.
+                CommandResult state = runner.Run(PsPath, new List<string> { "-o", "stat=", "-p", pid.ToString(System.Globalization.CultureInfo.InvariantCulture) }, PsTimeoutMs);
+                if (state.Success && state.StandardOutput.TrimStart().StartsWith("Z", StringComparison.Ordinal)) return false;
+                return true;
             }
             catch (Exception)
             {

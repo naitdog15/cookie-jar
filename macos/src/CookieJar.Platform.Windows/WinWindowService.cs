@@ -10,7 +10,7 @@ namespace CookieJar.Platform.Windows
     /// Win32 window control, ported from src/WindowManager.cs. Window id = HWND as a long.
     /// Dead or zero ids return false/empty and never throw.
     /// </summary>
-    public sealed class WinWindowService : IWindowService
+    public sealed class WinWindowService : IWindowService, IForegroundProcessSource
     {
         internal const int SW_MINIMIZE = 6;
         internal const int SW_SHOWMINNOACTIVE = 7;
@@ -175,6 +175,22 @@ namespace CookieJar.Platform.Windows
             try
             {
                 return ToId(User32.GetForegroundWindow());
+            }
+            catch (Exception)
+            {
+                return 0;
+            }
+        }
+
+        public int GetForegroundProcessId()
+        {
+            try
+            {
+                IntPtr fg = User32.GetForegroundWindow();
+                if (fg == IntPtr.Zero) return 0;
+                uint pid;
+                User32.GetWindowThreadProcessId(fg, out pid);
+                return (int)pid;
             }
             catch (Exception)
             {

@@ -12,22 +12,44 @@ namespace CookieJar.Tests
     {
         public string FileName;
         public List<string> Arguments;
+        public string Stdin;   // null when the call had no stdin
     }
 
     /// <summary>
     /// Fake for `security` (a small in-memory Keychain) and `launchctl`/`open` (always succeed unless told otherwise).
     /// Records every call so tests can assert the exact argv.
     /// </summary>
-    internal sealed class RecordingRunner : ICommandRunner
+    internal sealed class RecordingRunner : IStdinCommandRunner
     {
         public readonly List<RecordedCall> Calls = new List<RecordedCall>();
         public readonly Dictionary<string, string> Keychain = new Dictionary<string, string>(StringComparer.Ordinal);
         public bool FailToStart;
         public bool FailLaunchctl;
 
+        public string StderrOnSuccess = "";   // lets a test simulate `security -i` exiting 0 while reporting an error
+
         public CommandResult Run(string fileName, IReadOnlyList<string> arguments, int timeoutMs)
         {
-            Calls.Add(new RecordedCall { FileName = fileName, Arguments = new List<string>(arguments) });
+            return Run(fileName, arguments, null, timeoutMs);
+        }
+
+        public CommandResult Run(string fileName, IReadOnlyList<string> arguments, string standardInput, int timeoutMs)
+        {
+            Calls.Add(new RecordedCall { FileName = fileName, Arguments = new List<string>(arguments), Stdin = standardInput });
+            if (fileName == "security" && arguments.Count == 1 && arguments[0] == "-i")
+            {
+                if (FailToStart) return new CommandResult(-1, "", "could not start", false, true);
+                // Interactive mode: every stdin line is one command, split like a shell (double quotes, backslash escapes).
+                CommandResult last = new CommandResult(0, "", "", false, false);
+                foreach (string line in (standardInput ?? "").Split('\n'))
+                {
+                    if (line.Length == 0) continue;
+                    List<string> argv = Tokenize(line);
+                    last = Security(argv);
+                    if (!last.Success) return last;
+                }
+                return new CommandResult(last.ExitCode, last.StandardOutput, StderrOnSuccess, false, false);
+            }
             if (FailToStart) return new CommandResult(-1, "", "could not start", false, true);
             if (fileName == "security") return Security(arguments);
             if (fileName == "launchctl" && FailLaunchctl) return new CommandResult(5, "", "Bootstrap failed", false, false);
@@ -51,6 +73,23 @@ namespace CookieJar.Tests
                     return new CommandResult(44, "", "The specified item could not be found in the keychain.", false, false);
             }
             return new CommandResult(2, "", "unknown", false, false);
+        }
+
+        private static List<string> Tokenize(string line)
+        {
+            List<string> tokens = new List<string>();
+            System.Text.StringBuilder cur = new System.Text.StringBuilder();
+            bool inQuote = false, any = false;
+            for (int i = 0; i < line.Length; i++)
+            {
+                char c = line[i];
+                if (c == '\\' && i + 1 < line.Length) { cur.Append(line[++i]); any = true; }
+                else if (c == '"') { inQuote = !inQuote; any = true; }
+                else if (c == ' ' && !inQuote) { if (any) { tokens.Add(cur.ToString()); cur.Clear(); any = false; } }
+                else { cur.Append(c); any = true; }
+            }
+            if (any) tokens.Add(cur.ToString());
+            return tokens;
         }
 
         private static string ArgAfter(IReadOnlyList<string> a, string flag)
@@ -87,16 +126,29 @@ namespace CookieJar.Tests
 
             bool set = store.Set("cookies", "s3cret");
             T.Check("keychain Set returns true", set);
-            T.Check("keychain Set argv is exact",
-                runner.Calls.Count == 1 && runner.Calls[0].FileName == "security" &&
-                Same(runner.Calls[0].Arguments, "add-generic-password", "-U", "-s", "com.cookiejar.app", "-a", "cookies", "-w", "s3cret"));
+            T.Check("keychain Set uses `security -i` and sends the command on stdin",
+                runner.Calls.Count == 1 && runner.Calls[0].FileName == "security" && Same(runner.Calls[0].Arguments, "-i") &&
+                runner.Calls[0].Stdin == "add-generic-password -U -s \"com.cookiejar.app\" -a \"cookies\" -w \"s3cret\"\n",
+                runner.Calls[0].Stdin);
+            T.Check("keychain secret never appears in any argv", !runner.Calls.Any(c => c.Arguments.Any(a => a.Contains("s3cret"))));
 
             T.Check("keychain Get round-trips the value", store.Get("cookies") == "s3cret");
             T.Check("keychain Get argv is exact",
                 Same(runner.Calls[runner.Calls.Count - 1].Arguments, "find-generic-password", "-s", "com.cookiejar.app", "-a", "cookies", "-w"));
 
-            store.Set("newline", "abc\n");
-            T.Check("keychain Get trims exactly one trailing newline", store.Get("newline") == "abc\n");
+            int callsBefore = runner.Calls.Count;
+            T.Check("keychain refuses values or keys with CR/LF/NUL (cannot be sent safely) without calling security",
+                !store.Set("newline", "abc\n") && !store.Set("k\r", "v") && !store.Set("k", "a\0b") && runner.Calls.Count == callsBefore);
+
+            T.Check("keychain Set with quotes and backslashes round-trips", store.Set("quoted", "a\"b\\c d") && store.Get("quoted") == "a\"b\\c d");
+
+            FakeCommandRunner plain = new FakeCommandRunner();
+            MacSecretStore noStdin = new MacSecretStore(plain);
+            T.Check("keychain with a runner that has no stdin refuses to store (never falls back to argv)",
+                !noStdin.Set("k", "secret-value") && plain.Calls.Count == 0);
+
+            RecordingRunner lies = new RecordingRunner { StderrOnSuccess = "security: SecKeychainItemCreateFromContent: User interaction is not allowed." };
+            T.Check("keychain Set is false when security -i exits 0 but reports an error on stderr", !new MacSecretStore(lies).Set("k", "v"));
 
             T.Check("keychain Get on missing key returns null", store.Get("absent") == null);
 
@@ -112,7 +164,7 @@ namespace CookieJar.Tests
             MacSecretStore custom = new MacSecretStore(runner, "com.example.svc");
             custom.Set("k", "v");
             T.Check("keychain custom service name is used",
-                Same(runner.Calls[runner.Calls.Count - 1].Arguments, "add-generic-password", "-U", "-s", "com.example.svc", "-a", "k", "-w", "v"));
+                runner.Calls[runner.Calls.Count - 1].Stdin == "add-generic-password -U -s \"com.example.svc\" -a \"k\" -w \"v\"\n");
 
             RecordingRunner broken = new RecordingRunner { FailToStart = true };
             MacSecretStore brokenStore = new MacSecretStore(broken);

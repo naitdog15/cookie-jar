@@ -16,5 +16,11 @@ namespace CookieJar.AppModel
 
         /// <summary>One line per account decision, for the log.</summary>
         public Action<string> Log { get; set; }
+
+        /// <summary>
+        /// Raised with the account id when a ticket failed because the saved login expired, so the app can mark the
+        /// account Expired (the Windows runner did AccountStore.SetStatus(id, "Expired")). Optional.
+        /// </summary>
+        public Action<string> AccountTokenExpired { get; set; }
     }
 }

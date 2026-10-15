@@ -71,7 +71,11 @@ namespace CookieJar.Tests
                 T.Check("another service instance cannot take a held lock", !other.TryAcquireAppInstanceLock("CookieJar Main"));
 
                 shell.ReleaseAppInstanceLock("CookieJar Main");
-                T.Check("lock file is deleted on release", !File.Exists(Path.Combine(dir, "CookieJar_Main.lock")));
+                // The file stays on purpose: deleting it after the release lets a second process lock the old file while a
+                // third creates and locks a new one (two owners). Only the lock is released.
+                T.Check("lock file is kept on release (no delete race), but the lock is free",
+                    File.Exists(Path.Combine(dir, "CookieJar_Main.lock")) && other.TryAcquireAppInstanceLock("CookieJar Main"));
+                other.ReleaseAppInstanceLock("CookieJar Main");
                 T.Check("acquire after release returns true", shell.TryAcquireAppInstanceLock("CookieJar Main"));
                 shell.ReleaseAppInstanceLock("CookieJar Main");
 
