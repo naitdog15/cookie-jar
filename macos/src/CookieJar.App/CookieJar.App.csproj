@@ -1,0 +1,22 @@
+<!-- UNVERIFIED: never compiled. Written on a PC with only the .NET SDK 3.1; needs the .NET 8 SDK and a Mac build. -->
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0</TargetFramework>
+    <RootNamespace>CookieJar.App</RootNamespace>
+    <AssemblyName>CookieJar</AssemblyName>
+    <!-- MAC-UNVERIFIED: Avalonia 11.0.10 is assumed to run on macOS 13+ via Avalonia.Desktop. -->
+    <AvaloniaUseCompiledBindingsByDefault>false</AvaloniaUseCompiledBindingsByDefault>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="Avalonia" Version="11.0.10" />
+    <PackageReference Include="Avalonia.Desktop" Version="11.0.10" />
+    <PackageReference Include="Avalonia.Themes.Fluent" Version="11.0.10" />
+  </ItemGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\CookieJar.AppModel\CookieJar.AppModel.csproj" />
+    <ProjectReference Include="..\CookieJar.Core\CookieJar.Core.csproj" />
+    <ProjectReference Include="..\CookieJar.Platform\CookieJar.Platform.csproj" />
+    <ProjectReference Include="..\CookieJar.Platform.Mac\CookieJar.Platform.Mac.csproj" />
+  </ItemGroup>
+</Project>

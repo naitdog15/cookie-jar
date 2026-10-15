@@ -1,0 +1,47 @@
+<!-- UNVERIFIED: never compiled. Hex values copied by hand from src/Theme.cs Apply(); check against that file. -->
+<ResourceDictionary xmlns="https://github.com/avaloniaui"
+                    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+  <!-- Light is the default palette (Theme.Apply(false)); Dark matches Theme.Apply(true). Avalonia picks by the OS setting. -->
+  <ResourceDictionary.ThemeDictionaries>
+    <ResourceDictionary x:Key="Light">
+      <SolidColorBrush x:Key="Bg" Color="#FFF8ED" />
+      <SolidColorBrush x:Key="Surface" Color="#FFFFFF" />
+      <SolidColorBrush x:Key="SurfaceAlt" Color="#F8EEDD" />
+      <SolidColorBrush x:Key="Border" Color="#E5D3BC" />
+      <SolidColorBrush x:Key="Text" Color="#35261E" />
+      <SolidColorBrush x:Key="TextMuted" Color="#716158" />
+      <SolidColorBrush x:Key="Accent" Color="#95572D" />
+      <SolidColorBrush x:Key="AccentHover" Color="#7D4523" />
+      <SolidColorBrush x:Key="AccentSoft" Color="#F4E0C8" />
+      <SolidColorBrush x:Key="OnAccent" Color="#FFFFFF" />
+      <SolidColorBrush x:Key="Success" Color="#3F6F4C" />
+      <SolidColorBrush x:Key="SuccessSoft" Color="#E4F0E6" />
+      <SolidColorBrush x:Key="Warning" Color="#855700" />
+      <SolidColorBrush x:Key="WarningSoft" Color="#F7E8C6" />
+      <SolidColorBrush x:Key="Danger" Color="#A63F3F" />
+      <SolidColorBrush x:Key="DangerSoft" Color="#F8DEDA" />
+      <SolidColorBrush x:Key="DangerHover" Color="#F1C4BE" />
+      <SolidColorBrush x:Key="ScrollThumb" Color="#B99F89" />
+    </ResourceDictionary>
+    <ResourceDictionary x:Key="Dark">
+      <SolidColorBrush x:Key="Bg" Color="#211A16" />
+      <SolidColorBrush x:Key="Surface" Color="#2B231E" />
+      <SolidColorBrush x:Key="SurfaceAlt" Color="#352A23" />
+      <SolidColorBrush x:Key="Border" Color="#514137" />
+      <SolidColorBrush x:Key="Text" Color="#FFF7ED" />
+      <SolidColorBrush x:Key="TextMuted" Color="#C2B3A8" />
+      <SolidColorBrush x:Key="Accent" Color="#E7A96B" />
+      <SolidColorBrush x:Key="AccentHover" Color="#F2BA7E" />
+      <SolidColorBrush x:Key="AccentSoft" Color="#493424" />
+      <SolidColorBrush x:Key="OnAccent" Color="#2B1608" />
+      <SolidColorBrush x:Key="Success" Color="#8BC49A" />
+      <SolidColorBrush x:Key="SuccessSoft" Color="#22342A" />
+      <SolidColorBrush x:Key="Warning" Color="#F2C66D" />
+      <SolidColorBrush x:Key="WarningSoft" Color="#3D321A" />
+      <SolidColorBrush x:Key="Danger" Color="#F08E88" />
+      <SolidColorBrush x:Key="DangerSoft" Color="#4C2928" />
+      <SolidColorBrush x:Key="DangerHover" Color="#653634" />
+      <SolidColorBrush x:Key="ScrollThumb" Color="#796354" />
+    </ResourceDictionary>
+  </ResourceDictionary.ThemeDictionaries>
+</ResourceDictionary>
