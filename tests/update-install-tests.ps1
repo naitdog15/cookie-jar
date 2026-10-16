@@ -13,6 +13,9 @@ function Reject([string]$Name, [scriptblock]$Action) {
 }
 $work = Join-Path $PSScriptRoot ('out/update fixture & test-' + [guid]::NewGuid().ToString('N'))
 New-Item -ItemType Directory -Force $work | Out-Null
+$hashFixture = Join-Path $work 'hash-vector.txt'
+[IO.File]::WriteAllText($hashFixture, 'abc', [Text.UTF8Encoding]::new($false))
+Check 'module-independent SHA-256 matches known vector' ((Get-UpdateHash $hashFixture) -eq 'BA7816BF8F01CFEA414140DE5DAE2223B00361A396177A9CB410FF61F20015AD')
 $revision = 'a' * 40
 $version = (Get-Content -LiteralPath (Join-Path $root 'VERSION') -Raw).Trim()
 $zipPath = Join-Path $work 'source.zip'

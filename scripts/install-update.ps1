@@ -1,6 +1,13 @@
 param([ValidateSet('Prepare','Install')][string]$Mode, [string]$ConfigPath)
 $ErrorActionPreference = 'Stop'
 
+function Get-UpdateHash([string]$Path) {
+    $hash = [Security.Cryptography.SHA256]::Create()
+    $stream = [IO.File]::OpenRead($Path)
+    try { return [BitConverter]::ToString($hash.ComputeHash($stream)).Replace('-', '') }
+    finally { $stream.Dispose(); $hash.Dispose() }
+}
+
 function Expand-UpdateSource([string]$Archive, [string]$Destination) {
     Add-Type -AssemblyName System.IO.Compression.FileSystem
     $zip = [IO.Compression.ZipFile]::OpenRead($Archive)
@@ -22,7 +29,7 @@ function Assert-UpdateBinary($Config) {
     if (!(Test-Path -LiteralPath $candidate)) { throw 'Prepared executable is missing.' }
     $version = [Diagnostics.FileVersionInfo]::GetVersionInfo($candidate).ProductVersion
     if ($version -ne $Config.Version) { throw 'Prepared executable version does not match the requested update.' }
-    if ($Config.BinaryHash -and (Get-FileHash -LiteralPath $candidate -Algorithm SHA256).Hash -ne $Config.BinaryHash) {
+    if ($Config.BinaryHash -and (Get-UpdateHash $candidate) -ne $Config.BinaryHash) {
         throw 'Prepared executable changed after verification.'
     }
     $notes = Join-Path $Config.WorkDirectory 'build/PATCH_NOTES.md'
@@ -45,7 +52,7 @@ function Prepare-SourceUpdate($Config, [string]$LogPath) {
     & $psExe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File (Join-Path $source 'build.ps1') -OutDir $buildOutput -SourceArchive -SourceRevision $Config.Revision >> $LogPath 2>&1
     if ($LASTEXITCODE -ne 0) { throw "Source build failed (exit $LASTEXITCODE)." }
     $candidate = Assert-UpdateBinary $Config
-    $Config | Add-Member -NotePropertyName BinaryHash -NotePropertyValue (Get-FileHash -LiteralPath $candidate -Algorithm SHA256).Hash -Force
+    $Config | Add-Member -NotePropertyName BinaryHash -NotePropertyValue (Get-UpdateHash $candidate) -Force
 }
 
 function Install-UpdateFiles($Config, [scriptblock]$Restart) {
