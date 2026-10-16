@@ -8,6 +8,9 @@
   </PropertyGroup>
   <ItemGroup>
     <Compile Include="..\Shared\MiniTest.cs" Link="MiniTest.cs" />
+    <!-- Test-only decoding of the existing Windows screenshot fixtures; no OS calls or drawing packages. -->
+    <Compile Include="..\..\src\CookieJar.Platform.Mac\PngDecoder.cs" Link="FixturePngDecoder.cs" />
+    <None Include="..\..\..\tests\*.png" Link="Fixtures\%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" />
     <ProjectReference Include="..\..\src\CookieJar.Core\CookieJar.Core.csproj" />
   </ItemGroup>
 </Project>

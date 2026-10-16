@@ -1,4 +1,12 @@
-# macOS port: status after phase 1
+# macOS port status
+
+## Stage two update (2026-10-16)
+
+The detector port listed first under "Next phases" is implemented in `CookieJar.Core.Imaging`. Cash-out, invite, hospital, and teleport analysis now consumes `RawImage`, with explicit `IOcrService` injection and managed image preprocessing. Core has **669 passing checks**, including **148 new checks** for screenshot fixtures, scaling, padded buffers, OCR failures, conservative confirmation, matching, scene differences, and cancellation. See [integration notes](detectors.md).
+
+The phase-one report below is historical. The Avalonia launch controls and background-efficiency timer are still unwired; the authenticated ticket launcher and Vision helper remain unported. Real Mac execution remains unverified. The detector port does not enable automated input in the app.
+
+Final validation: `macos/verify.ps1` reports **VERIFY OK**. All six projects build, including the Avalonia app; Core, Windows, Mac, and AppModel tests pass. Validation ran on Windows, not macOS.
 
 Verified on the Windows PC with `powershell -File macos\verify.ps1`: **VERIFY OK**, no fixes needed.
 
@@ -64,7 +72,7 @@ Windows column: implemented and tested here (Windows project). macOS column: cod
 | Start with login | supported | unverified (LaunchAgent) |
 | Roblox locator/launcher | supported | unverified (/Applications or ~/Applications) |
 | Permissions reporting | n/a | unverified (PermissionState Granted/Denied/Unknown) |
-| Detectors (System.Drawing.Bitmap) | supported | unsupported until ported to RawImage |
+| Detectors | supported | RawImage analysis implemented and fixture-tested in Core; real Mac capture / OCR unverified |
 | Tray / mini bar | supported | unsupported until menu bar item exists |
 
 ## Open issues and contract requests
@@ -110,7 +118,7 @@ Quit the clients afterward yourself (Cmd-Q); the scripts never close them.
 
 ## Next phases
 
-1. Port the detectors from `System.Drawing.Bitmap` to `RawImage` so they live in Core.
+1. **Done in stage two:** port the detectors from `System.Drawing.Bitmap` to `RawImage` so they live in Core.
 2. Install the .NET 8 SDK, build and run the Avalonia App, fix compile errors there.
 3. Replace the tray and mini bar with a menu bar item.
 4. Run Platform.Mac against a real Mac and clear the MAC-UNVERIFIED markers (the composed `MacPlatform.CreateDefault()` and the stdin secret store are done).

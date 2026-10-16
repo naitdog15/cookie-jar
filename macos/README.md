@@ -7,6 +7,7 @@ A cross-platform port of Cookie Jar. The Windows app in `../src` is untouched an
 |---|---|
 | `src/CookieJar.Platform` | **Contracts**: interfaces every OS implements (processes, secrets, windows, input, capture, OCR, startup, Roblox locator/launcher) plus the capability flags. Frozen after phase 1; changes need the lead's sign-off. |
 | `src/CookieJar.Core` | Platform-independent logic: profiles, accounts, restrictions, RAM policy, tiling maths, instance model, launch planning. |
+| `src/CookieJar.Core/Imaging` | Stage-two detectors: cash-out, invites, hospital, Friends panel / teleport matching, managed pixel operations. See [detector integration notes](docs/detectors.md). |
 | `src/CookieJar.Platform.Windows` | Windows implementations of the contracts (wraps the existing Win32 code). |
 | `src/CookieJar.Platform.Mac` | macOS implementations (libc, `open`, `security`, LaunchAgents, Accessibility/CGEvent). **Not run on a real Mac yet.** |
 | `src/CookieJar.AppModel` | View-models and launch orchestration, UI-framework free. |
