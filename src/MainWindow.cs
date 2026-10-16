@@ -127,6 +127,10 @@ namespace RbxMulti
         private bool _keepAlive;
         private bool _bgEfficiency = true;
         private CheckBox _efficiencyCheck;
+        private bool _autoRam = true;
+        private CheckBox _autoRamCheck;
+        private TextBlock _autoRamStatus;
+        private readonly Dictionary<int, int> _autoRamCaps = new Dictionary<int, int>();
         private readonly List<EfficiencyTarget> _effTargets = new List<EfficiencyTarget>();
 
         /// <summary>Lowers CPU priority and turns on Windows efficiency mode for clients that are not in front.</summary>
@@ -709,6 +713,17 @@ namespace RbxMulti
             _efficiencyCheck.Unchecked += OnEfficiencyToggled;
             body.Children.Add(_efficiencyCheck);
 
+            _autoRamCheck = MakeCheck("Auto RAM allocation across sessions");
+            _autoRamCheck.IsChecked = _autoRam;
+            _autoRamCheck.ToolTip = "Shares RAM equally across active and starting sessions, leaving 4 GB for Windows and apps. "
+                + "Up to 3 GB per session. Overrides manual limits while on; switching off restores them. These are working-set caps, not reserved RAM.";
+            _autoRamCheck.Checked += OnAutoRamToggled;
+            _autoRamCheck.Unchecked += OnAutoRamToggled;
+            body.Children.Add(_autoRamCheck);
+            _autoRamStatus = Track(UiUtil.Label("Waiting for hardware detection", 12, false, Theme.TextMuted), true);
+            _autoRamStatus.TextWrapping = TextWrapping.Wrap;
+            body.Children.Add(_autoRamStatus);
+
             body.Children.Add(Track(UiUtil.Label("Closing or minimising this window hides it in the tray. Use Exit (top right) or the tray menu to quit.", 12, false, Theme.TextMuted), true));
 
             _settingsExpander = new Expander();
@@ -747,6 +762,7 @@ namespace RbxMulti
         {
             _profile = profile;
             MemoryGovernor.Initialize(profile);
+            UpdateAutoRam();
             // Restrictor accepts a null profile and falls back to conservative limits.
             _restrictor = new Restrictor(profile);
 
@@ -784,6 +800,7 @@ namespace RbxMulti
             }
 
             UpdateEfficiency();
+            UpdateAutoRam();
             SampleMonitor();
             if (_tray != null) { _tray.SetRunning(_manager.RunningCount); }
             RefreshButtons();   // also keeps ActiveProfile current for the mini bar and instance mapping
@@ -1326,7 +1343,78 @@ namespace RbxMulti
         }
 
         /// <summary>The RAM setting in force for an instance: made here, else from its account in the active profile, else null.</summary>
+        private void OnAutoRamToggled(object sender, RoutedEventArgs e)
+        {
+            if (_settingsSync) return;
+            _autoRam = _autoRamCheck.IsChecked == true;
+            UpdateAutoRam();
+            SaveMiniBarSettings();
+            RefreshCardStats();
+            _advancedSignature = "";
+            RefreshAdvancedIfChanged();
+            UpdateRamSummary();
+            RefreshAccountList();
+            AppendLog(_autoRam ? "Auto RAM allocation enabled." : "Auto RAM allocation off; manual session limits restored.");
+        }
+
+        private void UpdateAutoRam()
+        {
+            List<RobloxInstance> running = RunningInstances();
+            int count = _manager.RunningCount; // includes sessions still starting, even before their PID exists
+            MemoryGovernor.SetInstanceCountHint(count);
+            int mb = _profile == null ? 0 : AutoRamPolicy.PerSessionMb(_profile.RamGb, count);
+            HashSet<int> live = new HashSet<int>();
+            foreach (RobloxInstance inst in running) live.Add(inst.Pid);
+            foreach (int pid in new List<int>(_autoRamCaps.Keys))
+            {
+                if (!live.Contains(pid))
+                {
+                    MemoryGovernor.Clear(pid);
+                    _autoRamCaps.Remove(pid);
+                }
+            }
+            int failures = 0;
+            foreach (RobloxInstance inst in running)
+            {
+                if (_autoRam && mb > 0)
+                {
+                    int previous;
+                    if (_autoRamCaps.TryGetValue(inst.Pid, out previous) && previous == mb) continue;
+                    bool ok = MemoryGovernor.Apply(inst.Pid, MemoryPreset.Custom, mb);
+                    _autoRamCaps[inst.Pid] = ok ? mb : -mb; // failed applications retry on the next tick
+                    if (!ok) failures++;
+                }
+                else if (_autoRamCaps.ContainsKey(inst.Pid))
+                {
+                    RamSetting manual = GetManualRam(inst);
+                    bool ok = MemoryGovernor.Apply(inst.Pid, manual == null ? MemoryPreset.Unlimited : manual.Preset,
+                        manual == null ? 0 : manual.CustomMb);
+                    if (ok) _autoRamCaps.Remove(inst.Pid);
+                    else failures++;
+                }
+            }
+            if (_autoRamStatus != null)
+            {
+                _autoRamStatus.Text = !_autoRam ? "Manual session RAM limits are in use."
+                    : _profile == null ? "Waiting for hardware detection"
+                    : count == 0 ? "Auto RAM is ready; no active sessions."
+                    : mb == 0 ? "RAM budget too small for automatic allocation; close sessions or use manual limits."
+                    : string.Format(CultureInfo.InvariantCulture, "Auto RAM: {0} MB per session across {1} sessions (up to 3 GB each; 4 GB reserved).", mb, count);
+                if (failures > 0) _autoRamStatus.Text += " Retrying RAM limits for " + failures + " session(s).";
+            }
+        }
+
         private RamSetting GetRam(RobloxInstance inst)
+        {
+            if (_autoRam && _profile != null && inst.IsActive)
+            {
+                int mb = AutoRamPolicy.PerSessionMb(_profile.RamGb, _manager.RunningCount);
+                if (mb > 0) return new RamSetting { Preset = MemoryPreset.Custom, CustomMb = mb };
+            }
+            return GetManualRam(inst);
+        }
+
+        private RamSetting GetManualRam(RobloxInstance inst)
         {
             RamSetting setting;
             if (_ram.TryGetValue(inst.Id, out setting))
@@ -1353,6 +1441,11 @@ namespace RbxMulti
 
         private void ApplyRamToInstance(RobloxInstance inst, RamSetting setting)
         {
+            if (_autoRam && _profile != null)
+            {
+                UpdateAutoRam();
+                return;
+            }
             if (inst.Pid <= 0)
             {
                 return;
@@ -1367,6 +1460,11 @@ namespace RbxMulti
         /// <summary>Sets an instance's RAM preset: applies it now and stores it to the active profile when the account is known.</summary>
         private void SetInstanceRam(RobloxInstance inst, MemoryPreset preset, int customMb)
         {
+            if (_autoRam)
+            {
+                ShowTemporaryError("Switch off Auto RAM allocation in Settings to set manual session limits.");
+                return;
+            }
             RamSetting setting = new RamSetting();
             setting.Preset = preset;
             setting.CustomMb = customMb;
@@ -1452,6 +1550,8 @@ namespace RbxMulti
             _ramSummary.Text = "Allocated " + allocated.ToString(CultureInfo.InvariantCulture) + " MB of "
                 + freeMb.ToString(CultureInfo.InvariantCulture) + " MB free";
             _ramSummary.Foreground = Theme.TextMuted;
+            if (_autoRam) _ramSummary.Text = "Auto RAM caps: " + allocated.ToString(CultureInfo.InvariantCulture)
+                + " MB total across active sessions; " + freeMb.ToString(CultureInfo.InvariantCulture) + " MB currently free";
 
             List<string> warnings = MemoryGovernor.ValidateAllocation(items);
             string warnKey = Theme.Warning + "|" + string.Join("|", warnings.ToArray());
@@ -1549,6 +1649,9 @@ namespace RbxMulti
                 (current != null && current.CustomMb > 0 ? current.CustomMb : DefaultCustomRamMb).ToString(CultureInfo.InvariantCulture),
                 80, "Custom memory limit in MB for " + inst.Name);
             Button applyCustom = PillButton.Create("Apply custom MB", PillStyle.Secondary);
+            customBox.IsEnabled = !_autoRam;
+            applyCustom.IsEnabled = !_autoRam;
+            applyCustom.ToolTip = "Switch off Auto RAM allocation in Settings to use manual session limits.";
             AutomationProperties.SetName(applyCustom, "Apply custom memory limit to " + inst.Name);
             applyCustom.Margin = new Thickness(8, 0, 0, 0);
             applyCustom.Click += delegate
@@ -2292,6 +2395,7 @@ namespace RbxMulti
             }
 
             MemoryGovernor.SetInstanceCountHint(_manager.Instances.Count);
+            UpdateAutoRam();
             UpdateEmptyState();
             RefreshButtons();
             RefreshAdvancedIfChanged();
@@ -2721,6 +2825,8 @@ namespace RbxMulti
                     mb = MemoryGovernor.ResolveMb(setting.Preset, setting.CustomMb);
                 }
                 _ramSlider.SetMb(mb);
+                _ramSlider.IsEnabled = !_owner._autoRam;
+                if (_owner._autoRam) _ramSlider.ToolTip = "Managed by Auto RAM allocation in Settings. Switch it off to use manual session limits.";
             }
 
             private void OnAutoChanged(object sender, RoutedEventArgs e)
@@ -2927,6 +3033,7 @@ namespace RbxMulti
                 if (_autoStartCheck != null) { _autoStartCheck.Foreground = Theme.Text; }
                 if (_keepAliveCheck != null) { _keepAliveCheck.Foreground = Theme.Text; }
                 if (_efficiencyCheck != null) { _efficiencyCheck.Foreground = Theme.Text; }
+                if (_autoRamCheck != null) { _autoRamCheck.Foreground = Theme.Text; }
                 if (_intervalBox != null) { _intervalBox.Foreground = Theme.Text; _intervalBox.Background = Theme.SurfaceAlt; _intervalBox.BorderBrush = Theme.Border; }
                 if (_logBox != null) { _logBox.Background = Theme.SurfaceAlt; _logBox.Foreground = Theme.Text; }
                 if (_capacityBar != null) { _capacityBar.ApplyTheme(); _cpuBar.ApplyTheme(); _ramBar.ApplyTheme(); }
@@ -3198,6 +3305,10 @@ namespace RbxMulti
                     {
                         _bgEfficiency = on;
                     }
+                    else if (key == "autoRam")
+                    {
+                        _autoRam = on;
+                    }
                     else if (key == "traytip")
                     {
                         _trayTipShown = on;
@@ -3232,6 +3343,7 @@ namespace RbxMulti
                 lineList.Add(KeepAliveKey + "=" + (_keepAlive ? "true" : "false"));
                 lineList.Add(MiniBarKey + "=" + (_miniBar != null ? "true" : "false"));
                 lineList.Add(EfficiencyKey + "=" + (_bgEfficiency ? "true" : "false"));
+                lineList.Add("autoRam=" + (_autoRam ? "true" : "false"));
                 lineList.Add("traytip=" + (_trayTipShown ? "true" : "false"));
                 lineList.AddRange(InputSettingLines());
                 string[] lines = lineList.ToArray();

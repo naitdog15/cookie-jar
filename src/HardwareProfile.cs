@@ -10,7 +10,7 @@ namespace RbxMulti
 	public class HardwareProfile
 	{
 		// RAM kept free for Windows and background apps.
-		public const double OsReserveGb = 3.0;
+		public const double OsReserveGb = 4.0;
 
 		private const double GiB = 1024.0 * 1024.0 * 1024.0;
 
@@ -39,7 +39,11 @@ namespace RbxMulti
 			{
 				double ramAvailable = RamGb - OsReserveGb;
 				int maxFromRam = (int)Math.Floor(ramAvailable / PerInstanceRamGb);
-				int limit = Math.Min(CpuCores, maxFromRam);
+				// Extra hardware threads help background clients, but are not full cores.
+				int cores = Math.Max(1, CpuCores);
+				int threads = Math.Max(cores, LogicalProcessors);
+				int cpuBudget = cores + (threads - cores) / 2;
+				int limit = Math.Min(cpuBudget, maxFromRam);
 
 				// Low-VRAM GPUs (under 4 GB) are limited to 3 instances.
 				if (VramGb > 0 && VramGb < 4.0)
@@ -48,7 +52,6 @@ namespace RbxMulti
 				}
 
 				if (limit < 1) limit = 1;
-				if (limit > 12) limit = 12;
 				return limit;
 			}
 		}
@@ -57,9 +60,13 @@ namespace RbxMulti
 		{
 			get
 			{
-				int hard = RecommendedMax + 2;
-				if (hard > 14) hard = 14;
-				return hard;
+				// Higher counts assume lighter/background clients (1.5 GB each).
+				// Actual free-memory checks in Restrictor still gate every launch.
+				int ramBudget = (int)Math.Floor((RamGb - OsReserveGb) / 1.5);
+				int cpuBudget = Math.Max(Math.Max(1, CpuCores), LogicalProcessors);
+				int hard = Math.Min(cpuBudget, ramBudget);
+				if (VramGb > 0 && VramGb < 4.0) hard = Math.Min(hard, 5);
+				return Math.Max(RecommendedMax, hard);
 			}
 		}
 

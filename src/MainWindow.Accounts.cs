@@ -1129,6 +1129,7 @@ namespace RbxMulti
         /// <summary>The RAM slider of an account row settled: 0 = Auto (no cap), otherwise a cap in MB saved to the profile.</summary>
         private void OnAccountRamCommitted(Account account, int mb)
         {
+            if (_autoRam) return;
             if (_profileRunning) return;
             LaunchProfile p = ActiveProfile;
             if (p == null) return;
@@ -1196,7 +1197,8 @@ namespace RbxMulti
                 {
                     RamSlider ram = new RamSlider("RAM limit for " + a.DisplayName + " in this profile");
                     ram.Margin = new Thickness(0, 0, 8, 6);
-                    ram.IsEnabled = !_profileRunning;
+                    ram.IsEnabled = !_profileRunning && !_autoRam;
+                    if (_autoRam) ram.ToolTip = "Auto RAM allocation is on. Switch it off in Settings to edit manual profile limits.";
                     ram.SetMb(ap.HasRamPreset(a.Id) ? ap.ResolveRamMb(a.Id) : 0);
                     ram.Committed += delegate(int mb) { OnAccountRamCommitted(a, mb); };
                     buttons.Children.Add(ram);

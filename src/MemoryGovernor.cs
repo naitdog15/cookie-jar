@@ -27,7 +27,7 @@
 //         (HardwareProfile.Detect() runs on first use inside try/catch). Idempotent.
 //
 //     void SetInstanceCountHint(int count);
-//         Number of instances used by SuggestedMb scaling. Clamped to 1..16.
+//         Number of instances used by SuggestedMb scaling. Minimum 1.
 //
 //     int SuggestedMb(MemoryPreset preset);
 //         Unlimited -> 0, Custom -> 0. Base values: High 3584, Medium 2048, Low 1200 MB.
@@ -108,7 +108,7 @@ namespace RbxMulti
 		private const int RoundStepMb = 64;
 		private const int BudgetFloorMb = 2048;
 		private const int CountMin = 1;
-		private const int CountMax = 16;
+		private const int CountMax = int.MaxValue;
 		private const int FallbackRamGb = 4;
 
 		// kernel32 access and flag values.
@@ -211,7 +211,7 @@ namespace RbxMulti
 			catch { }
 		}
 
-		// Sets the instance count used by SuggestedMb scaling (clamped to 1..16).
+		// Sets the instance count used by SuggestedMb scaling (minimum 1).
 		public static void SetInstanceCountHint(int count)
 		{
 			try

@@ -6,6 +6,12 @@ _(formerly Roblox Multi Launcher)_
 
 WPF launcher (.NET Framework, C# 5) for running several Roblox clients. Runs as administrator.
 
+Windows instance limits scale with hardware: recommended capacity uses physical cores plus half the extra logical threads, a 2 GB RAM budget per client, and a 4 GB OS/app reserve. The hard limit uses logical threads and 1.5 GB per client with the same reserve. GPUs reporting under 4 GB VRAM retain limits of 3 recommended / 5 maximum. Live memory blocks and CPU warnings still apply. These are planning estimates, not measured game capacity. An i7-8700K (6C/12T), about 24 GB usable RAM and RTX 3070 Ti gets **9 recommended / 12 maximum**, previously 6 / 8. The macOS port still uses its earlier policy.
+
+Run `./tests/build_hardware_tests.ps1` for hardware policy and launch-boundary checks; these do not launch games or send input.
+
+Settings > **Auto RAM allocation across sessions** is on by default and remembers your choice. It splits the RAM budget (total RAM minus 4 GB for Windows/apps) equally across active and starting sessions, up to 3 GB each, rounded down to 64 MB steps. Caps rebalance as sessions start, stop or relaunch, including while the launcher is in the tray. On this PC that is 2,240 MB each at 9 sessions and 1,664 MB each at 12. Switching it off restores the existing per-session/profile limits. These working-set caps do not reserve physical memory or limit all game memory; live low-memory protection still applies. The instance targets remain **9 recommended / 12 maximum**.
+
 ## Build and run
 - `./build.ps1` builds `bin\CookieJar.exe`; `./build.ps1 -OutDir bin_dev` builds a dev copy.
 - Close the launcher (tray icon -> Exit) before rebuilding; it locks the exe. Run the exe and accept the UAC prompt.
