@@ -13,6 +13,7 @@ $files += (Join-Path $root 'tests\ScratchHost.cs')
 $a = @('/nologo','/target:exe','/platform:x64','/optimize+','/main:RbxMulti.ScratchHost',"/out:$out",
   "/r:$wpf\PresentationFramework.dll","/r:$wpf\PresentationCore.dll","/r:$fw\WPF\WindowsBase.dll",
   '/r:System.Xaml.dll','/r:System.Management.dll','/r:System.Drawing.dll','/r:System.Windows.Forms.dll','/r:System.dll','/r:System.Core.dll','/r:Microsoft.CSharp.dll') + $files
+$a += '/r:System.Web.Extensions.dll'
 & $csc @a
 if ($LASTEXITCODE -ne 0) { Write-Host 'SCRATCH BUILD FAILED'; exit $LASTEXITCODE }
 Write-Host "SCRATCH BUILD OK: $out"

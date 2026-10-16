@@ -25,3 +25,7 @@ Keep notes brief and factual: version, date, platform, summary, user-facing chan
 4. Commit with an outcome-focused message. Rebuild from the clean commit for distributable artifacts so generated provenance identifies that commit. Push only within the user's authorized scope. Include the version and relevant validation in the final report.
 
 The commit check also covers `macos/src`; use the same version and notes convention for port updates. The existing macOS build does not yet consume Windows generated assembly metadata or copy its distribution notes: Mac release work must wire those into its packaging before claiming a versioned Mac distribution.
+
+## Source-based Windows updates
+
+The in-app updater follows `main` and pins the full GitHub commit SHA before reading VERSION, notes and source. Keep the source update contract working: `build.ps1 -SourceArchive -SourceRevision <40-character-SHA> -OutDir <directory>` must build from an extracted snapshot without Git installed, still validate VERSION/source notes, embed the installer resource and emit the versioned executable plus PATCH_NOTES.md. This mode omits Git working-tree checks because an archive has no index. Never use it to bypass normal development build/commit checks. Private repository access requires an authenticated GitHub CLI with repository read access.

@@ -731,6 +731,7 @@ namespace RbxMulti
             _overrideLimitCheck.Checked += OnOverrideLimitToggled;
             _overrideLimitCheck.Unchecked += OnOverrideLimitToggled;
             body.Children.Add(_overrideLimitCheck);
+            body.Children.Add(BuildUpdateControls());
 
             body.Children.Add(Track(UiUtil.Label("Closing or minimising this window hides it in the tray. Use Exit (top right) or the tray menu to quit.", 12, false, Theme.TextMuted), true));
 
