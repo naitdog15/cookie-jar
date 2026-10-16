@@ -197,7 +197,7 @@ namespace RbxMulti
             // Theme first, so every brush the UI uses is already in the right colours.
             Theme.Apply(Theme.SystemPrefersDark());
 
-            Title = "Cookie Jar";
+            Title = "Cookie Jar " + AppVersion.Display;
             Width = 1000;
             Height = 920;
             MinWidth = 800;
