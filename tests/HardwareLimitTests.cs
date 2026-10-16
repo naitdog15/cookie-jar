@@ -24,6 +24,13 @@ namespace RbxMulti
             Check("tenth launch warns", r.Evaluate(9, 8, 30).Level == RestrictLevel.Warn);
             Check("twelfth launch warns", r.Evaluate(11, 8, 30).CanLaunch);
             Check("thirteenth launch blocked", !r.Evaluate(12, 8, 30).CanLaunch);
+            RestrictResult extra = r.Evaluate(12, 8, 30, true);
+            Check("override permits thirteenth with explicit warning", extra.CanLaunch && extra.Level == RestrictLevel.Warn && extra.RequiresConfirmation);
+            Check("every extra launch requires confirmation", r.Evaluate(13, 8, 30, true).RequiresConfirmation);
+            Check("override off restores count block", !r.Evaluate(13, 8, 30, false).CanLaunch);
+            Check("override retains low-memory block", !r.Evaluate(12, 1.49, 30, true).CanLaunch);
+            Check("ordinary warning stays ordinary", !r.Evaluate(9, 8, 30, true).RequiresConfirmation);
+            Check("override warning includes live resources", extra.Message.Contains("8.0 GB") && extra.Message.Contains("30%"));
             Check("low RAM still blocks", !r.Evaluate(0, 1.49, 0).CanLaunch);
             Check("busy CPU still warns", r.Evaluate(0, 8, 95).Level == RestrictLevel.Warn);
             HardwareProfile low = P(6, 12, 8, 8);

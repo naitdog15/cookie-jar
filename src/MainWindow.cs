@@ -128,6 +128,8 @@ namespace RbxMulti
         private bool _bgEfficiency = true;
         private CheckBox _efficiencyCheck;
         private bool _autoRam = true;
+        private bool _overrideInstanceLimit;
+        private CheckBox _overrideLimitCheck;
         private CheckBox _autoRamCheck;
         private TextBlock _autoRamStatus;
         private readonly Dictionary<int, int> _autoRamCaps = new Dictionary<int, int>();
@@ -724,6 +726,12 @@ namespace RbxMulti
             _autoRamStatus.TextWrapping = TextWrapping.Wrap;
             body.Children.Add(_autoRamStatus);
 
+            _overrideLimitCheck = MakeCheck("Override hardware instance limit (this app session only)");
+            _overrideLimitCheck.ToolTip = "Allows additional sessions beyond the hardware limit after an explicit warning for each launch. Low-memory protection remains active. Resets when Cookie Jar exits.";
+            _overrideLimitCheck.Checked += OnOverrideLimitToggled;
+            _overrideLimitCheck.Unchecked += OnOverrideLimitToggled;
+            body.Children.Add(_overrideLimitCheck);
+
             body.Children.Add(Track(UiUtil.Label("Closing or minimising this window hides it in the tray. Use Exit (top right) or the tray menu to quit.", 12, false, Theme.TextMuted), true));
 
             _settingsExpander = new Expander();
@@ -878,7 +886,8 @@ namespace RbxMulti
 
             int recommended = RecommendedCount();
             _recommendText.Text = "Recommended " + recommended.ToString(CultureInfo.InvariantCulture)
-                + "  ·  hard limit " + HardMaxCount().ToString(CultureInfo.InvariantCulture);
+                + "  ·  hardware limit " + HardMaxCount().ToString(CultureInfo.InvariantCulture)
+                + (_overrideInstanceLimit ? " (override ON)" : "");
             _capacityBar.SetFraction((double)running / Math.Max(1, recommended));
             _capacityText.Text = running.ToString(CultureInfo.InvariantCulture)
                 + " / " + recommended.ToString(CultureInfo.InvariantCulture);
@@ -910,7 +919,7 @@ namespace RbxMulti
             {
                 return null;
             }
-            return _restrictor.Evaluate(_manager.RunningCount, _monitor.FreeRamGb, _monitor.CpuPercent);
+            return _restrictor.Evaluate(_manager.RunningCount, _monitor.FreeRamGb, _monitor.CpuPercent, _overrideInstanceLimit);
         }
 
         private int RecommendedCount()
@@ -1343,6 +1352,42 @@ namespace RbxMulti
         }
 
         /// <summary>The RAM setting in force for an instance: made here, else from its account in the active profile, else null.</summary>
+        private void OnOverrideLimitToggled(object sender, RoutedEventArgs e)
+        {
+            if (_settingsSync) return;
+            bool enable = _overrideLimitCheck.IsChecked == true;
+            if (enable && MessageBox.Show(this,
+                "This removes the hardware instance-count block for this app session. Additional clients can cause severe lag, disk paging, crashes or make Windows unresponsive. "
+                + "Auto RAM does not create more memory. You will need to confirm each launch beyond the hardware limit. Low-memory protection stays on.\n\nEnable the override?",
+                "Override hardware instance limit", MessageBoxButton.YesNo, MessageBoxImage.Warning,
+                MessageBoxResult.No) != MessageBoxResult.Yes)
+            {
+                SetSettingCheck(_overrideLimitCheck, false);
+                return;
+            }
+            _overrideInstanceLimit = enable;
+            AppendLog(enable ? "Hardware instance-limit override ON for this app session; every extra launch requires confirmation."
+                : "Hardware instance-limit override OFF.");
+            RefreshButtons();
+            RefreshLiveInfo();
+        }
+
+        private bool ConfirmResourceWarning(RestrictResult warning, bool profileRun)
+        {
+            if (warning.RequiresConfirmation)
+            {
+                bool go = MessageBox.Show(this, warning.Message, warning.Title, MessageBoxButton.YesNo,
+                    MessageBoxImage.Warning, MessageBoxResult.No) == MessageBoxResult.Yes;
+                AppendLog(go ? "Hardware limit override explicitly confirmed: " + warning.Message
+                    : "Launch stopped: hardware limit override declined.");
+                return go;
+            }
+            return TimedWarnDialog.Confirm(this, warning.Message + (profileRun
+                ? "\n\nKeep launching the rest of this profile anyway? Launching continues automatically when the countdown ends."
+                : "\n\nLaunch another instance anyway? Launching continues automatically when the countdown ends."),
+                profileRun ? "Keep launching" : "Launch anyway", profileRun ? "Stop" : "Cancel", TimedWarnDialog.DefaultSeconds);
+        }
+
         private void OnAutoRamToggled(object sender, RoutedEventArgs e)
         {
             if (_settingsSync) return;
@@ -2183,6 +2228,7 @@ namespace RbxMulti
             s.Running = _manager.RunningCount;
             s.Recommended = RecommendedCount();
             s.HardMax = HardMaxCount();
+            s.InstanceLimitOverride = _overrideInstanceLimit;
             s.CpuPercent = _monitor.CpuPercent;
             s.UsedRamPercent = _monitor.UsedRamPercent;
             s.FreeRamGb = _monitor.FreeRamGb;
@@ -3034,6 +3080,7 @@ namespace RbxMulti
                 if (_keepAliveCheck != null) { _keepAliveCheck.Foreground = Theme.Text; }
                 if (_efficiencyCheck != null) { _efficiencyCheck.Foreground = Theme.Text; }
                 if (_autoRamCheck != null) { _autoRamCheck.Foreground = Theme.Text; }
+                if (_overrideLimitCheck != null) { _overrideLimitCheck.Foreground = Theme.Warning; }
                 if (_intervalBox != null) { _intervalBox.Foreground = Theme.Text; _intervalBox.Background = Theme.SurfaceAlt; _intervalBox.BorderBrush = Theme.Border; }
                 if (_logBox != null) { _logBox.Background = Theme.SurfaceAlt; _logBox.Foreground = Theme.Text; }
                 if (_capacityBar != null) { _capacityBar.ApplyTheme(); _cpuBar.ApplyTheme(); _ramBar.ApplyTheme(); }

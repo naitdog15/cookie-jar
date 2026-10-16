@@ -260,11 +260,11 @@ namespace RbxMulti
     {
         private readonly InstanceManager _manager;
         private readonly Func<RestrictResult> _evaluate;
-        private readonly Func<string, bool> _confirmWarn;
+        private readonly Func<RestrictResult, bool> _confirmWarn;
         private readonly Action<string> _progress;
 
         public ProfileRunner(InstanceManager manager, Func<RestrictResult> evaluate,
-            Func<string, bool> confirmWarn, Action<string> progress)
+            Func<RestrictResult, bool> confirmWarn, Action<string> progress)
         {
             _manager = manager;
             _evaluate = evaluate;
@@ -311,10 +311,10 @@ namespace RbxMulti
                     stopped = true;
                     break;
                 }
-                if (r.Level == RestrictLevel.Warn && !warned)
+                if (r.Level == RestrictLevel.Warn && (!warned || r.RequiresConfirmation))
                 {
                     warned = true;
-                    if (!_confirmWarn(r.Message))
+                    if (!_confirmWarn(r))
                     {
                         _manager.WriteLog("Profile launch stopped at your request (warning declined)");
                         stopped = true;

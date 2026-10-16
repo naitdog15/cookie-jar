@@ -13,6 +13,8 @@ Run `./tests/build_hardware_tests.ps1` for hardware policy and launch-boundary c
 Settings > **Auto RAM allocation across sessions** is on by default and remembers your choice. It splits the RAM budget (total RAM minus 4 GB for Windows/apps) equally across active and starting sessions, up to 3 GB each, rounded down to 64 MB steps. Caps rebalance as sessions start, stop or relaunch, including while the launcher is in the tray. On this PC that is 2,240 MB each at 9 sessions and 1,664 MB each at 12. Switching it off restores the existing per-session/profile limits. These working-set caps do not reserve physical memory or limit all game memory; live low-memory protection still applies. The instance targets remain **9 recommended / 12 maximum**.
 
 ## Build and run
+To exceed the hardware instance-count limit, enable **Settings > Override hardware instance limit (this app session only)** and confirm the warning. Each additional launch beyond the limit requires an explicit Yes/No confirmation (default No, no automatic countdown), including every extra account in a profile run. Warnings show the next session number, free RAM and CPU load and explain lag, paging, crashes and an unresponsive Windows desktop. The override resets on app exit; the block below 1.5 GB free RAM remains active. The main window and mini bar tooltip show when the override is on. The 9 recommended / 12 hardware limit values remain the default targets on this PC.
+
 - `./build.ps1` builds `bin\CookieJar.exe`; `./build.ps1 -OutDir bin_dev` builds a dev copy.
 - Close the launcher (tray icon -> Exit) before rebuilding; it locks the exe. Run the exe and accept the UAC prompt.
 - `CookieJar.exe --minibar` starts with only the mini bar and the tray icon (used by "Start with Windows").

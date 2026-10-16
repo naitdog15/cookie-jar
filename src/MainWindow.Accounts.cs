@@ -564,8 +564,7 @@ namespace RbxMulti
 
             if (result.Level == RestrictLevel.Warn)
             {
-                if (!TimedWarnDialog.Confirm(this, result.Message + "\n\nLaunch another instance anyway? Launching continues automatically when the countdown ends.",
-                    "Launch anyway", "Cancel", TimedWarnDialog.DefaultSeconds))
+                if (!ConfirmResourceWarning(result, false))
                 {
                     return;
                 }
@@ -936,14 +935,12 @@ namespace RbxMulti
             ProfileRunner runner = new ProfileRunner(
                 _manager,
                 delegate { return (RestrictResult)Dispatcher.Invoke(new Func<RestrictResult>(EvaluateRestriction)); },
-                delegate(string message)
+                delegate(RestrictResult warning)
                 {
                     return (bool)Dispatcher.Invoke(new Func<bool>(delegate
                     {
-                        bool go = TimedWarnDialog.Confirm(this,
-                            message + "\n\nKeep launching the rest of this profile anyway? Launching continues automatically when the countdown ends.",
-                            "Keep launching", "Stop", TimedWarnDialog.DefaultSeconds);
-                        AppendLog(go ? "Resource warning accepted (or timed out): " + message : "Resource warning: profile launch stopped by you.");
+                        bool go = ConfirmResourceWarning(warning, true);
+                        if (!warning.RequiresConfirmation) AppendLog(go ? "Resource warning accepted (or timed out): " + warning.Message : "Resource warning: profile launch stopped by you.");
                         return go;
                     }));
                 },

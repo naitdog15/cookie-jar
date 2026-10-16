@@ -82,6 +82,7 @@ namespace RbxMulti
         public int Running;
         public int Recommended;
         public int HardMax;
+        public bool InstanceLimitOverride;
         public double CpuPercent;
         public double UsedRamPercent;
         public double FreeRamGb;
@@ -421,8 +422,9 @@ namespace RbxMulti
                 + "\nFree RAM: " + s.FreeRamGb.ToString("0.0", System.Globalization.CultureInfo.InvariantCulture) + " GB"
                 + "\nCPU: " + s.CpuPercent.ToString("0", System.Globalization.CultureInfo.InvariantCulture) + "%"
                 + "\nInstances: " + s.Running.ToString(System.Globalization.CultureInfo.InvariantCulture) + " running, "
-                + (s.Recommended > 0 ? s.Recommended.ToString(System.Globalization.CultureInfo.InvariantCulture) + " recommended, hard limit "
-                    + s.HardMax.ToString(System.Globalization.CultureInfo.InvariantCulture) : "recommended count still being detected");
+                + (s.Recommended > 0 ? s.Recommended.ToString(System.Globalization.CultureInfo.InvariantCulture) + " recommended, hardware limit "
+                    + s.HardMax.ToString(System.Globalization.CultureInfo.InvariantCulture) : "recommended count still being detected")
+                + (s.InstanceLimitOverride ? "\nHardware instance-limit override ON; extra launches require confirmation." : "");
             _statsPanel.ToolTip = tip;
             _badge.ToolTip = tip;
         }

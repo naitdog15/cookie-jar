@@ -15,6 +15,7 @@ namespace RbxMulti
 		public RestrictLevel Level { get; set; }
 		public string Title { get; set; }
 		public string Message { get; set; }
+		public bool RequiresConfirmation { get; set; }
 
 		public bool CanLaunch
 		{
@@ -71,18 +72,23 @@ namespace RbxMulti
 
 		public RestrictResult Evaluate(int runningCount, double freeRamGb, double cpuPercent)
 		{
+			return Evaluate(runningCount, freeRamGb, cpuPercent, false);
+		}
+
+		public RestrictResult Evaluate(int runningCount, double freeRamGb, double cpuPercent, bool overrideInstanceLimit)
+		{
 			string pcName = PcLabel();
 			string cores = CoreCount();
 			string ram = RamText();
 
 			// 1. Hard limit
-			if (runningCount >= _hardMax)
+			if (runningCount >= _hardMax && !overrideInstanceLimit)
 			{
 				return RestrictResult.Create(
 					RestrictLevel.Block,
 					"Hard limit reached",
 					string.Format(CultureInfo.InvariantCulture,
-						"Hard limit reached: this PC ({0}, {1} cores, {2} GB RAM) can run at most {3} instances. Close one to continue.",
+						"Hardware limit reached: this PC ({0}, {1} cores, {2} GB RAM) has a limit of {3} instances. Close one, or enable Override hardware instance limit in Settings to proceed with warnings.",
 						pcName, cores, ram, _hardMax));
 			}
 
@@ -98,6 +104,19 @@ namespace RbxMulti
 			}
 
 			// 3. Beyond recommended count
+			if (runningCount >= _hardMax && overrideInstanceLimit)
+			{
+				RestrictResult warning = RestrictResult.Create(RestrictLevel.Warn, "Hardware limit override",
+					string.Format(CultureInfo.InvariantCulture,
+						"You are launching instance {0}, beyond this PC's hardware limit of {1} ({2} recommended). "
+						+ "Free RAM: {3:F1} GB; CPU: {4:F0}%. More sessions can cause severe lag, disk paging, game crashes or make Windows unresponsive. "
+						+ "Auto RAM only caps working sets; it does not create or reserve memory. Close sessions if performance deteriorates. "
+						+ "Launch this additional instance anyway? This requires your confirmation and will not continue automatically.",
+						runningCount + 1, _hardMax, _recommended, freeRamGb, cpuPercent));
+				warning.RequiresConfirmation = true;
+				return warning;
+			}
+
 			if (runningCount >= _recommended)
 			{
 				return RestrictResult.Create(
