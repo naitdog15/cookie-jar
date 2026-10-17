@@ -137,6 +137,10 @@ namespace RbxMulti
 
         /// <summary>Lowers CPU priority and turns on Windows efficiency mode for clients that are not in front.</summary>
         internal readonly BackgroundEfficiency Efficiency = new BackgroundEfficiency();
+
+        /// <summary>Focus mode: the focused instance is fullscreen with High priority and every processor.</summary>
+        internal readonly FocusBoost FocusCpu = new FocusBoost();
+        private int _focusInstId;
         private bool _exiting;
         private bool _settingsSync;
         private MiniBar _miniBar;
@@ -809,6 +813,7 @@ namespace RbxMulti
             }
 
             UpdateEfficiency();
+            UpdateFocus();
             UpdateAutoRam();
             SampleMonitor();
             if (_tray != null) { _tray.SetRunning(_manager.RunningCount); }
@@ -852,6 +857,105 @@ namespace RbxMulti
             catch (Exception)
             {
                 // Efficiency is an extra; it must never stop the refresh.
+            }
+        }
+
+        /// <summary>True while this instance is the one in Focus mode.</summary>
+        internal bool IsFocusMode(RobloxInstance inst)
+        {
+            return inst != null && _focusInstId == inst.Id && inst.StatusKind != "Stopped";
+        }
+
+        /// <summary>Starts Focus mode on inst (fullscreen, most CPU), or leaves it when inst is already focused.</summary>
+        internal void ToggleFocus(RobloxInstance inst)
+        {
+            if (inst == null) return;
+            if (_focusInstId == inst.Id)
+            {
+                ClearFocus();
+                return;
+            }
+            _focusInstId = inst.Id;
+            FocusCpu.Log = AppendLog;
+            ApplyFocusCpu();
+            AppendLog("Focus mode on for " + inst.Name + ": fullscreen with the most CPU. Click Unfocus to go back.");
+            FullscreenFocused();
+        }
+
+        /// <summary>Leaves Focus mode: CPU settings return and the windows are tiled again.</summary>
+        internal void ClearFocus()
+        {
+            if (_focusInstId == 0) return;
+            _focusInstId = 0;
+            FocusCpu.Release();
+            AppendLog("Focus mode off.");
+            TileAll();
+        }
+
+        private void ApplyFocusCpu()
+        {
+            RobloxInstance focused = null;
+            List<int> others = new List<int>();
+            foreach (RobloxInstance inst in RunningInstances())
+            {
+                if (inst.Id == _focusInstId) focused = inst;
+                else others.Add(inst.Pid);
+            }
+            if (focused == null) return;
+            FocusCpu.Apply(focused.Pid, others);
+        }
+
+        private void FullscreenFocused()
+        {
+            RobloxInstance focused = null;
+            foreach (RobloxInstance inst in RunningInstances())
+            {
+                if (inst.Id == _focusInstId) { focused = inst; break; }
+            }
+            if (focused == null) return;
+            ThreadPool.QueueUserWorkItem(delegate(object state)
+            {
+                try
+                {
+                    IntPtr hwnd = FindWindowFor(focused, 3000);
+                    if (hwnd == IntPtr.Zero)
+                    {
+                        AppendLogFromAnyThread("No window found for " + focused.Name + " yet.");
+                        return;
+                    }
+                    WindowManager.PlaceFullscreen(hwnd);
+                    WindowManager.BringToFront(hwnd);
+                }
+                catch (Exception ex)
+                {
+                    AppendLogFromAnyThread("Focus fullscreen failed: " + ex.Message);
+                }
+            });
+        }
+
+        /// <summary>Once a second: keep the CPU boost applied (new clients, priority drift) and end Focus if the client stopped.</summary>
+        private void UpdateFocus()
+        {
+            if (_focusInstId == 0) return;
+            try
+            {
+                bool alive = false;
+                foreach (RobloxInstance inst in RunningInstances())
+                {
+                    if (inst.Id == _focusInstId) { alive = true; break; }
+                }
+                if (!alive)
+                {
+                    _focusInstId = 0;
+                    FocusCpu.Release();
+                    AppendLog("Focus mode ended: the focused client stopped.");
+                    return;
+                }
+                ApplyFocusCpu();
+            }
+            catch (Exception)
+            {
+                // Focus is an extra; it must never stop the refresh.
             }
         }
 
@@ -1164,6 +1268,13 @@ namespace RbxMulti
         {
             if (targets == null || targets.Count == 0)
             {
+                return;
+            }
+
+            if (_focusInstId != 0)
+            {
+                // Focus mode owns the layout: the focused window stays fullscreen, nothing is tiled around it.
+                FullscreenFocused();
                 return;
             }
 
@@ -2528,6 +2639,8 @@ namespace RbxMulti
             private readonly TextBlock _caption;
             private readonly StatusBadge _badge;
             private readonly Button _switchButton;
+            private readonly Button _focusButton;
+            private bool _shownFocused;
             private readonly Button _stopButton;
             private readonly Button _removeButton;
             private readonly Button _relaunchButton;
@@ -2589,6 +2702,12 @@ namespace RbxMulti
                 _switchButton.ToolTip = "Bring this instance's window to the front.";
                 AutomationProperties.SetName(_switchButton, "Switch to " + instance.Name);
 
+                _focusButton = PillButton.Create("_Focus", PillStyle.Secondary);
+                _focusButton.Click += delegate { _owner.ToggleFocus(_instance); RefreshFocusButton(); };
+                _focusButton.Margin = new Thickness(0, 0, 8, 0);
+                AutomationProperties.SetName(_focusButton, "Focus " + instance.Name);
+                RefreshFocusButton();
+
                 _stopButton = PillButton.Create("_Stop", PillStyle.Danger);
                 _stopButton.Click += delegate { _owner.StopInstance(_instance); };
                 _stopButton.Margin = new Thickness(0, 0, 8, 0);
@@ -2619,6 +2738,7 @@ namespace RbxMulti
                 AutomationProperties.SetName(_hospitalButton, "Go to the hospital in " + TeleportText.UserOf(instance));
                 _hospitalButton.Click += delegate { _owner.HospitalButtonClicked(_instance); };
                 actions.Children.Add(_switchButton);
+                actions.Children.Add(_focusButton);
                 actions.Children.Add(_cashRow.Button);
                 actions.Children.Add(_hospitalButton);
                 actions.Children.Add(_stopButton);
@@ -2763,9 +2883,20 @@ namespace RbxMulti
                 _owner.ApplyClickerConfig(_instance, on);
             }
 
+            /// <summary>Shows Focus or Unfocus. Focus mode is single-instance, so other cards read Focus (it moves it here).</summary>
+            private void RefreshFocusButton()
+            {
+                _shownFocused = _owner.IsFocusMode(_instance);
+                _focusButton.Content = _shownFocused ? "Un_focus" : "_Focus";
+                _focusButton.ToolTip = _shownFocused
+                    ? "Leave Focus mode: restore CPU settings and tile all windows again."
+                    : "Make this instance fullscreen and give it the most CPU: High priority on every processor, other clients limited to a few.";
+            }
+
             public void RefreshStats()
             {
                 SyncRam();
+                if (_owner.IsFocusMode(_instance) != _shownFocused) RefreshFocusButton();
                 // The detail line normally follows memory/uptime changes; redraw it at once when the background state flips.
                 if (_owner.Efficiency.IsThrottled(_instance.Pid) != _shownThrottled) RefreshDetails();
                 if (_owner.Clicker == null)
@@ -2944,6 +3075,9 @@ namespace RbxMulti
                 // A stopped card shows only what still applies: Relaunch, Remove, Layout.
                 Visibility live = stopped ? Visibility.Collapsed : Visibility.Visible;
                 _switchButton.Visibility = live;
+                _focusButton.Visibility = live;
+                _focusButton.IsEnabled = !stopped && !_busy;
+                RefreshFocusButton();
                 _stopButton.Visibility = live;
                 _cashRow.Button.Visibility = live;
                 _hospitalButton.Visibility = live;
@@ -3269,6 +3403,7 @@ namespace RbxMulti
             if (_tray != null) { _tray.Dispose(); _tray = null; }
             try { MemoryGovernor.ClearAll(); } catch { }
             try { Efficiency.RestoreAll(); } catch { }
+            try { FocusCpu.Release(); } catch { }
 
             _manager.Log -= AppendLogSafe;
             _manager.Instances.CollectionChanged -= OnInstancesChanged;

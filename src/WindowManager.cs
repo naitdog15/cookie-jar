@@ -369,6 +369,19 @@ namespace RbxMulti
                     }
                 }
 
+                if (count == 1)
+                {
+                    // A lone window fills the whole monitor (taskbar included), like a borderless fullscreen.
+                    TileCell full = new TileCell();
+                    full.X = monitor.FullWidth > 0 ? monitor.FullX : monitor.X;
+                    full.Y = monitor.FullWidth > 0 ? monitor.FullY : monitor.Y;
+                    full.Width = monitor.FullWidth > 0 ? monitor.FullWidth : workW;
+                    full.Height = monitor.FullWidth > 0 ? monitor.FullHeight : workH;
+                    full.MonitorIndex = monitor.Index;
+                    cells.Add(full);
+                    return cells;
+                }
+
                 int colsUsed = bestCols;
                 int rowsUsed = bestRows;
                 for (int r = 0; r < rowsUsed; r++)
@@ -525,6 +538,38 @@ namespace RbxMulti
             catch (Exception)
             {
                 return false;
+            }
+        }
+
+        /// <summary>
+        /// Covers the whole monitor the window is mostly on (taskbar included) and raises it. Returns the cell used,
+        /// or null when the window or monitor could not be found.
+        /// </summary>
+        public static TileCell PlaceFullscreen(IntPtr hwnd)
+        {
+            try
+            {
+                if (hwnd == IntPtr.Zero || !NativeMethods.IsWindow(hwnd)) return null;
+                IntPtr hMon = NativeMethods.MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST);
+                MonitorInfo target = null;
+                List<MonitorInfo> all = GetMonitors();
+                for (int i = 0; i < all.Count; i++)
+                {
+                    if (all[i].Handle == hMon) { target = all[i]; break; }
+                }
+                if (target == null) target = all[0];
+
+                TileCell cell = new TileCell();
+                cell.X = target.FullX;
+                cell.Y = target.FullY;
+                cell.Width = target.FullWidth;
+                cell.Height = target.FullHeight;
+                cell.MonitorIndex = target.Index;
+                return Place(hwnd, cell) ? cell : null;
+            }
+            catch (Exception)
+            {
+                return null;
             }
         }
 
