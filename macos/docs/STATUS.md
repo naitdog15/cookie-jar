@@ -1,5 +1,19 @@
 # macOS port status
 
+## Focus mode (2026-10-17)
+
+Port of the Windows 1.2.0 Focus button. One client fills its display (`IWindowService.SetBounds` to the display bounds, then `BringToFront`) and every other running client is held at background priority through `BackgroundEfficiency.FocusPid`, the single priority writer. Unfocus, or the focused client stopping, restores the window and priorities. Code: `Core/FocusMode.cs`, `AppModel` (`FocusCommand`, `FocusFeature`, `IsFocused`, `RelayCommand`), a Focus button on the instance card. A lone window in `Tiling` now fills the whole display (Windows parity); the tiling expectations were updated on purpose.
+
+Validated on Windows only: `verify.ps1` reports VERIFY OK (Core 687, Windows 143, Mac 340, AppModel 166). Never run on a Mac, and the Avalonia shell's launch controls and 1 s timer are still unwired, so the button is bound but the rest of the card commands are not.
+
+Differences from Windows, all contract limits (Platform is frozen, so listed here, not added):
+
+- No processor affinity on macOS, and no raising a process above normal. "More CPU" means slowing the others, not boosting the focused client.
+- Restoring priority needs root once nice has been raised (`MacProcessService.ClearBackgroundPriority`), so Unfocus may leave the other clients slowed until they restart. MAC-UNVERIFIED.
+- Fullscreen is the display bounds, not a macOS fullscreen Space. The menu bar and Dock may keep the window below them, or Accessibility may clamp it. MAC-UNVERIFIED.
+
+Contract requests: a priority-boost / affinity call on `IProcessService`, and a fullscreen call on `IWindowService`.
+
 ## Stage two update (2026-10-16)
 
 The detector port listed first under "Next phases" is implemented in `CookieJar.Core.Imaging`. Cash-out, invite, hospital, and teleport analysis now consumes `RawImage`, with explicit `IOcrService` injection and managed image preprocessing. Core has **669 passing checks**, including **148 new checks** for screenshot fixtures, scaling, padded buffers, OCR failures, conservative confirmation, matching, scene differences, and cancellation. See [integration notes](detectors.md).

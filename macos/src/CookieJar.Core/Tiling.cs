@@ -11,6 +11,9 @@ namespace CookieJar.Core
         public int X, Y, Width, Height;
         public double DpiScale;
 
+        /// <summary>Full display rectangle (menu bar and Dock included). FullWidth 0 means unknown.</summary>
+        public int FullX, FullY, FullWidth, FullHeight;
+
         /// <summary>
         /// Converts a platform display. Index is the position in the monitor list (0 = primary, then left to right),
         /// which the platform does not know, so the caller passes it.
@@ -26,6 +29,10 @@ namespace CookieJar.Core
             m.Width = monitor.WorkArea.Width;
             m.Height = monitor.WorkArea.Height;
             m.DpiScale = monitor.ScaleFactor;
+            m.FullX = monitor.Bounds.X;
+            m.FullY = monitor.Bounds.Y;
+            m.FullWidth = monitor.Bounds.Width;
+            m.FullHeight = monitor.Bounds.Height;
             return m;
         }
     }
@@ -89,6 +96,21 @@ namespace CookieJar.Core
                         bestCols = cols;
                         bestRows = rows;
                     }
+                }
+
+                if (count == 1)
+                {
+                    // A lone window fills the whole display, like the Windows 1.2.0 change, so one session can be fullscreen.
+                    // MAC-UNVERIFIED: macOS may keep a window below the menu bar or clamp it through Accessibility.
+                    bool known = monitor.FullWidth > 0 && monitor.FullHeight > 0;
+                    TileCell full = new TileCell();
+                    full.X = known ? monitor.FullX : monitor.X;
+                    full.Y = known ? monitor.FullY : monitor.Y;
+                    full.Width = known ? monitor.FullWidth : workW;
+                    full.Height = known ? monitor.FullHeight : workH;
+                    full.MonitorIndex = monitor.Index;
+                    cells.Add(full);
+                    return cells;
                 }
 
                 int colsUsed = bestCols;

@@ -28,7 +28,20 @@ namespace CookieJar.AppModel
             WindowPlacement = FeatureState.From(platform, PlatformCapabilities.WindowPlacement, "Window placement");
             InputInjection = FeatureState.From(platform, PlatformCapabilities.InputInjection, "Input injection");
             StartAtLogin = FeatureState.From(platform, PlatformCapabilities.StartAtLogin, "Start at login");
+
+            if (platform.Processes != null && platform.Windows != null)
+            {
+                Efficiency = new BackgroundEfficiency(platform.Processes);
+                Efficiency.ForegroundPid = BackgroundEfficiency.ForegroundFrom(platform);
+                Focus = new FocusMode(platform.Windows, Efficiency);
+            }
         }
+
+        /// <summary>The background-priority writer (also used by Focus). Null when the platform has no process or window service.</summary>
+        public BackgroundEfficiency Efficiency { get; }
+
+        /// <summary>Shared Focus mode. Null when the platform has no process or window service.</summary>
+        public FocusMode Focus { get; }
 
         public ObservableCollection<InstanceCardViewModel> Instances { get; }
         public ObservableCollection<AccountRowViewModel> Accounts { get; }
@@ -96,10 +109,16 @@ namespace CookieJar.AppModel
             _watched.Clear();
             foreach (InstanceCardViewModel card in Instances)
             {
+                card.AttachFocus(Focus, AllInstances);
                 card.PropertyChanged += OnCardChanged;
                 _watched.Add(card);
             }
             RaiseCountChanged();
+        }
+
+        private IList<RobloxInstance> AllInstances()
+        {
+            return Instances.Select(c => c.Instance).ToList();
         }
 
         private void OnCardChanged(object sender, PropertyChangedEventArgs e)

@@ -57,6 +57,14 @@ namespace CookieJar.Core
             _processes = processes;
         }
 
+        /// <summary>
+        /// Focus mode: when above 0, every other Running client is held at the background priority at once (no
+        /// start-up grace, whatever is in front), and this pid is left alone. It applies even while Enabled is off.
+        /// Set it back to 0 and call Update to restore the others. MAC-UNVERIFIED: macOS lowers priority with nice, and
+        /// an unprivileged process usually cannot raise it back, so Unfocus may leave clients slowed until they restart.
+        /// </summary>
+        public int FocusPid;
+
         public bool Enabled
         {
             get { return _enabled; }
@@ -109,7 +117,13 @@ namespace CookieJar.Core
         /// <summary>Brings every client to the wanted state for this moment. Call about once a second.</summary>
         public void Update(IList<EfficiencyTarget> targets, DateTime nowUtc)
         {
-            if (!_enabled || targets == null) return;
+            bool focus = FocusPid > 0;
+            if (targets == null) return;
+            if (!_enabled && !focus)
+            {
+                if (_throttled.Count > 0) RestoreAll();   // Focus ended while the feature is off: put everything back
+                return;
+            }
             int fg = ForegroundPid();
             _now.Clear();
             for (int i = 0; i < targets.Count; i++)
@@ -120,7 +134,11 @@ namespace CookieJar.Core
                 _now.TryGetValue(t.Pid, out flags);
                 if (t.Running) flags |= IsRunning;
                 // fg < 0: the foreground process is unknown, so nothing may be slowed (and anything slowed is restored).
-                if (t.Running && fg >= 0 && t.Pid != fg && (nowUtc - t.StartedUtc).TotalSeconds >= GraceSeconds) flags |= WantThrottle;
+                if (focus)
+                {
+                    if (t.Running && t.Pid != FocusPid) flags |= WantThrottle;
+                }
+                else if (_enabled && t.Running && fg >= 0 && t.Pid != fg && (nowUtc - t.StartedUtc).TotalSeconds >= GraceSeconds) flags |= WantThrottle;
                 _now[t.Pid] = flags;
             }
 

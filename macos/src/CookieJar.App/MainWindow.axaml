@@ -61,6 +61,11 @@
                            VerticalAlignment="Center" Margin="12,0" />
                 <StackPanel Grid.Column="4" Orientation="Horizontal" Spacing="8">
                   <!-- Tooltip sits on the wrapper: disabled controls may not receive hover in Avalonia. -->
+                  <!-- Focus: this client fullscreen, the others at background priority. MAC-UNVERIFIED: not run on a Mac;
+                       macOS cannot raise priority again without root, so Unfocus may leave the others slowed. -->
+                  <Border ToolTip.Tip="{Binding FocusFeature.Reason}">
+                    <Button Content="{Binding FocusLabel}" Command="{Binding FocusCommand}" IsEnabled="{Binding FocusFeature.Enabled}" />
+                  </Border>
                   <Border ToolTip.Tip="{Binding KillFeature.Reason}">
                     <Button Content="Kill" Command="{Binding KillCommand}" IsEnabled="{Binding KillFeature.Enabled}" />
                   </Border>
