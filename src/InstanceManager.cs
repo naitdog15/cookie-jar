@@ -57,6 +57,11 @@ namespace RbxMulti
             {
                 try
                 {
+                    int trayEnded = RobloxProcesses.EndIdleTrayClients();
+                    if (trayEnded > 0)
+                    {
+                        LogMessage("Ended " + trayEnded + " idle Roblox tray client(s) so the new launch gets its own process");
+                    }
                     List<int> running = RobloxProcesses.GetPids();
 
                     // Remember every process that exists before launching, tracked or not.
@@ -156,6 +161,10 @@ namespace RbxMulti
             {
                 try
                 {
+                    if (RobloxProcesses.EndIdleTrayClients() > 0)
+                    {
+                        LogMessage("Ended idle Roblox tray client(s) so the launch gets its own process");
+                    }
                     HashSet<int> known = new HashSet<int>(RobloxProcesses.GetPids());
                     foreach (int tracked in TrackedPids())
                     {
@@ -646,6 +655,97 @@ namespace RbxMulti
         public static bool AnyRunning()
         {
             return GetPids().Count > 0;
+        }
+
+        private delegate bool EnumProc(IntPtr hwnd, IntPtr lParam);
+
+        [System.Runtime.InteropServices.DllImport("user32.dll")]
+        private static extern bool EnumWindows(EnumProc proc, IntPtr lParam);
+
+        [System.Runtime.InteropServices.DllImport("user32.dll")]
+        private static extern bool IsWindowVisible(IntPtr hwnd);
+
+        [System.Runtime.InteropServices.DllImport("user32.dll")]
+        private static extern uint GetWindowThreadProcessId(IntPtr hwnd, out uint pid);
+
+        private static HashSet<int> PidsWithVisibleWindow()
+        {
+            HashSet<int> visible = new HashSet<int>();
+            EnumWindows(delegate(IntPtr hwnd, IntPtr lParam)
+            {
+                uint pid;
+                GetWindowThreadProcessId(hwnd, out pid);
+                if (pid != 0 && IsWindowVisible(hwnd))
+                {
+                    visible.Add((int)pid);
+                }
+                return true;
+            }, IntPtr.Zero);
+            return visible;
+        }
+
+        /// <summary>
+        /// Recent Roblox builds keep a hidden "tray" client alive (autostart with --launch-to-tray, and a
+        /// client whose window was closed stays resident). A new roblox-player launch is handed to that
+        /// resident process instead of starting a second client, so only one game ever runs. Ends every
+        /// RobloxPlayerBeta without a visible window that either carries --launch-to-tray or is over a
+        /// minute old, so the next launch starts its own process. Returns how many were ended. Never throws.
+        /// </summary>
+        public static int EndIdleTrayClients()
+        {
+            int ended = 0;
+            try
+            {
+                HashSet<int> visible = PidsWithVisibleWindow();
+                Dictionary<int, string> commandLines = new Dictionary<int, string>();
+                try
+                {
+                    using (System.Management.ManagementObjectSearcher searcher = new System.Management.ManagementObjectSearcher(
+                        "SELECT ProcessId, CommandLine FROM Win32_Process WHERE Name = 'RobloxPlayerBeta.exe'"))
+                    using (System.Management.ManagementObjectCollection rows = searcher.Get())
+                    {
+                        foreach (System.Management.ManagementBaseObject row in rows)
+                        {
+                            commandLines[Convert.ToInt32(row["ProcessId"])] = row["CommandLine"] as string;
+                            row.Dispose();
+                        }
+                    }
+                }
+                catch
+                {
+                }
+
+                foreach (Process p in Process.GetProcessesByName("RobloxPlayerBeta"))
+                {
+                    try
+                    {
+                        if (visible.Contains(p.Id))
+                        {
+                            continue;
+                        }
+                        string cmd;
+                        bool trayFlag = commandLines.TryGetValue(p.Id, out cmd) && cmd != null
+                            && cmd.IndexOf("--launch-to-tray", StringComparison.OrdinalIgnoreCase) >= 0;
+                        bool old = (DateTime.Now - p.StartTime).TotalSeconds > 60;
+                        if (trayFlag || old)
+                        {
+                            p.Kill();
+                            ended++;
+                        }
+                    }
+                    catch
+                    {
+                    }
+                    finally
+                    {
+                        p.Dispose();
+                    }
+                }
+            }
+            catch
+            {
+            }
+            return ended;
         }
     }
 }
