@@ -227,6 +227,7 @@ namespace RbxMulti
             Efficiency.Log = AppendLog;
 
             _manager.Log += AppendLogSafe;
+            LauncherLog.WriteStartup();
             _manager.Instances.CollectionChanged += OnInstancesChanged;
             Theme.Changed += OnThemeChanged;
             Closing += OnClosing;
@@ -3128,6 +3129,7 @@ namespace RbxMulti
         /// <summary>Appends a timestamped line on the UI thread, trimming to the newest 500 lines.</summary>
         private void AppendLog(string message)
         {
+            LauncherLog.Write(message);
             if (_logBox == null)
             {
                 return;
