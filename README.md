@@ -24,6 +24,7 @@ To exceed the hardware instance-count limit, enable **Settings > Override hardwa
 - `CookieJar.exe --minibar` starts with only the mini bar and the tray icon (used by "Start with Windows").
 
 ## Features
+- **Activity log > Dump log...** saves a dated text file for support with recent saved activity, version/system details and tracked-client status. Attach the file to your message with what happened and when. Known credential lines and Windows user-folder paths are masked; review activity for account/profile display names before sharing. Clear only clears the on-screen log; retained disk history still appears in exports.
 - Accounts and profiles stored with DPAPI (AccountStore / ProfileStore). Launch a whole profile in one click.
 - Game selection (Games.cs): dropdown offers Adopt Me! only (place 920587237), with the line "Launches: Adopt Me! (place 920587237)". Profile launches and website launches both use the selected game.
 - Per-instance RAM: No limit / Low / Medium / High / Custom MB. Low 1216, Medium 2048, High 3584 MB (scaled down with many instances), applied on change, launch and adoption, saved to the profile. Custom MB and allocation warnings are under Advanced.

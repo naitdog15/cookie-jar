@@ -48,6 +48,12 @@ namespace RbxMulti
             }
         }
 
+        /// <summary>Reads both retained logs under the writer lock so rotation cannot split the snapshot.</summary>
+        public static string ReadRecent()
+        {
+            lock (Gate) { return DiagnosticReport.ReadHistory(FilePath); }
+        }
+
         /// <summary>One line describing the setup that matters for multi-launch problems.</summary>
         public static void WriteStartup()
         {

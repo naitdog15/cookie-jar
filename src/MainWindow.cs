@@ -609,8 +609,16 @@ namespace RbxMulti
             clear.Margin = new Thickness(0, 0, 0, 8);
             clear.ToolTip = "Clear the activity log. Nothing is undone.";
 
+            Button dump = PillButton.Create("_Dump log...", PillStyle.Secondary);
+            dump.Margin = new Thickness(0, 0, 8, 8);
+            dump.ToolTip = "Save recent activity and system details to a text file you can send for support.";
+            dump.Click += OnDumpLog;
+            StackPanel actions = new StackPanel { Orientation = Orientation.Horizontal, HorizontalAlignment = HorizontalAlignment.Right };
+            actions.Children.Add(dump);
+            actions.Children.Add(clear);
+
             StackPanel content = new StackPanel();
-            content.Children.Add(clear);
+            content.Children.Add(actions);
             content.Children.Add(_logBox);
 
             Expander expander = new Expander();
