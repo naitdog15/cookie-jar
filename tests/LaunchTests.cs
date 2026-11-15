@@ -27,6 +27,8 @@ namespace RbxMulti
         [STAThread]
         private static int Main(string[] args)
         {
+            if (args.Length > 0 && args[0] == "--launch-pipeline-client")
+                return LaunchPipelineTests.RunChild(args);
             if (args.Length > 0 && args[0].StartsWith("roblox-player:", StringComparison.Ordinal))
                 return FakeClient(args);
             try
@@ -37,6 +39,9 @@ namespace RbxMulti
                 AbandonedOwner();
                 ConcurrentPreparation();
                 CancelBeforeLaunch();
+                GuardFailureTests.Run(Check);
+                LocatorTests.Run(Check);
+                LaunchPipelineTests.Run(Check);
                 Console.WriteLine(_passed + " launch checks passed; no real clients or input used.");
                 return 0;
             }

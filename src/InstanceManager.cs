@@ -12,6 +12,7 @@ namespace RbxMulti
     {
 
         private readonly Dispatcher _dispatcher;
+        private readonly LaunchEnvironment _launch;
         private int _nextId = 1;
         private readonly object _syncLock = new object();
         private readonly object _launchLock = new object();
@@ -20,7 +21,14 @@ namespace RbxMulti
         public event Action<string> Log;
 
         public InstanceManager()
+            : this(new LaunchEnvironment())
         {
+        }
+
+        internal InstanceManager(LaunchEnvironment launch)
+        {
+            if (launch == null) throw new ArgumentNullException("launch");
+            _launch = launch;
             Instances = new ObservableCollection<RobloxInstance>();
             _dispatcher = Dispatcher.CurrentDispatcher;
         }
@@ -57,7 +65,7 @@ namespace RbxMulti
             {
                 try
                 {
-                    int trayEnded = RobloxProcesses.EndIdleTrayClients(TrackedPids());
+                    int trayEnded = _launch.EndIdleTrayClients(TrackedPids());
                     if (trayEnded > 0)
                     {
                         LogMessage("Ended " + trayEnded + " idle Roblox tray client(s) so the new launch gets its own process");
@@ -127,9 +135,10 @@ namespace RbxMulti
 
         private bool PrepareMultiInstance(out string error)
         {
-            int closed = HandleCloser.CloseSingletonsInAllRoblox();
+            int closed;
+            bool ready = _launch.PrepareMultiInstance(out error, out closed);
             LogMessage("Closed " + closed + " singleton handles in existing Roblox processes");
-            if (!MultiInstanceGuard.Shared.EnsureReady(out error))
+            if (!ready)
             {
                 LogMessage(error);
                 return false;
@@ -164,7 +173,7 @@ namespace RbxMulti
 
         /// <summary>
         /// Launches one stored account straight into the installed player using its own ticket.
-        /// Waits for a stable, visible new client before adopting it or advancing to the next account.
+        /// Tracks the exact player immediately; waits for a stable window before reporting success.
         /// </summary>
         public AccountLaunchResult LaunchAccount(Account account, string profileName, long placeId, int timeoutSeconds, CancellationToken ct, bool mayClearCache = true)
         {
@@ -180,11 +189,11 @@ namespace RbxMulti
                         return result;
                     }
                     List<int> protectedPids = TrackedPids();
-                    if (RobloxProcesses.EndIdleTrayClients(protectedPids) > 0)
+                    if (_launch.EndIdleTrayClients(protectedPids) > 0)
                     {
                         LogMessage("Ended idle Roblox tray client(s) so the launch gets its own process");
                     }
-                    HashSet<int> known = new HashSet<int>(RobloxProcesses.GetPids());
+                    HashSet<int> known = new HashSet<int>(_launch.GetPids());
                     protectedPids.RemoveAll(delegate(int pid) { return !known.Contains(pid); });
 
                     string guardError;
@@ -195,22 +204,22 @@ namespace RbxMulti
                         return result;
                     }
 
-                    string playerExe = RobloxLocator.FindPlayerExe();
+                    string playerExe = _launch.FindPlayerExe();
                     if (string.IsNullOrEmpty(playerExe))
                     {
                         result.Outcome = LaunchOutcome.StartFailed;
                         result.Message = "RobloxPlayerBeta.exe was not found. Install or update Roblox, then retry.";
                         return result;
                     }
-                    if (mayClearCache && !RobloxProcesses.AnyRunning())
+                    if (mayClearCache && _launch.GetPids().Count == 0)
                     {
-                        CacheCleaner.ClearCache();
+                        _launch.ClearCache();
                     }
 
                     string ticket;
                     bool expired;
                     string ticketError;
-                    if (!TicketLauncher.GetTicket(account.Token, out ticket, out expired, out ticketError))
+                    if (!_launch.GetTicket(account.Token, out ticket, out expired, out ticketError))
                     {
                         result.Outcome = LaunchOutcome.TicketFailed;
                         result.Message = ticketError;
@@ -229,7 +238,7 @@ namespace RbxMulti
                     try
                     {
                         ProcessStartInfo psi = TicketLauncher.BuildPlayerStartInfo(playerExe, uri);
-                        starter = Process.Start(psi);
+                        starter = _launch.StartPlayer(psi);
                         if (starter == null) throw new InvalidOperationException();
                     }
                     catch (Exception)
@@ -239,9 +248,20 @@ namespace RbxMulti
                         return result;
                     }
 
-                    DateTime deadline = DateTime.UtcNow.AddSeconds(timeoutSeconds);
+                    // Register before any cancellation, timeout or previous-client failure can
+                    // return. Those outcomes leave already-started games running and manageable.
+                    RobloxInstance launched = Adopt(starter.Id, false, profileName, account.Username);
+                    if (launched == null)
+                    {
+                        result.Outcome = LaunchOutcome.MultiInstanceFailed;
+                        result.Message = "Roblox exited before it could be tracked. Update Roblox with all games closed, then retry.";
+                        return result;
+                    }
+                    lock (_syncLock) { _accountPids[account.Id] = starter.Id; }
+
+                    DateTime deadline = _launch.UtcNow.AddSeconds(timeoutSeconds);
                     DateTime visibleSince = DateTime.MinValue;
-                    while (DateTime.UtcNow < deadline)
+                    while (_launch.UtcNow < deadline)
                     {
                         if (ct.IsCancellationRequested)
                         {
@@ -249,7 +269,7 @@ namespace RbxMulti
                             return result;
                         }
 
-                        List<int> current = RobloxProcesses.GetPids();
+                        List<int> current = _launch.GetPids();
                         if (protectedPids.Exists(delegate(int existingPid) { return !current.Contains(existingPid); }))
                         {
                             result.Outcome = LaunchOutcome.MultiInstanceFailed;
@@ -268,27 +288,23 @@ namespace RbxMulti
                         // Only adopt the player we started for this ticket, never an unrelated
                         // client or updater that happens to appear during the same polling window.
                         int pid = starter.Id;
-                        if (WindowManager.FindWindowForPid(pid, 0) == IntPtr.Zero)
+                        if (!_launch.HasWindow(pid))
                         {
                             visibleSince = DateTime.MinValue;
                         }
                         else if (visibleSince == DateTime.MinValue)
                         {
-                            visibleSince = DateTime.UtcNow;
+                            visibleSince = _launch.UtcNow;
                         }
-                        else if ((DateTime.UtcNow - visibleSince).TotalSeconds >= 2)
+                        else if ((_launch.UtcNow - visibleSince).TotalSeconds >= 2)
                         {
-                            RobloxInstance inst = Adopt(pid, false, profileName, account.Username);
-                            if (inst != null)
-                            {
-                                lock (_syncLock) { _accountPids[account.Id] = pid; }
-                                LogMessage("New account client ready (PID " + pid + ", multi-instance guards held)");
-                                result.Outcome = LaunchOutcome.Ok;
-                                return result;
-                            }
+                            OnUi(() => launched.Status = "Running");
+                            LogMessage("New account client ready (PID " + pid + ", multi-instance guards held)");
+                            result.Outcome = LaunchOutcome.Ok;
+                            return result;
                         }
 
-                        Thread.Sleep(250);
+                        _launch.Wait(ct);
                     }
 
                     result.Outcome = LaunchOutcome.TimedOut;
@@ -307,14 +323,15 @@ namespace RbxMulti
             }
         }
 
-        /// <summary>Adds every already-running RobloxPlayerBeta process that is not tracked yet. Returns how many were added.</summary>
+        /// <summary>Adds visible already-running games, including minimised ones. Hidden tray clients are not games.</summary>
         public int AdoptRunning()
         {
             HashSet<int> tracked = new HashSet<int>(TrackedPids());
+            HashSet<int> visible = _launch.VisiblePids();
             int added = 0;
-            foreach (int pid in RobloxProcesses.GetPids())
+            foreach (int pid in _launch.GetPids())
             {
-                if (tracked.Contains(pid))
+                if (tracked.Contains(pid) || !visible.Contains(pid))
                 {
                     continue;
                 }
@@ -373,22 +390,38 @@ namespace RbxMulti
                 return null;
             }
 
-            RobloxInstance instance = new RobloxInstance();
-            lock (_syncLock)
+            RobloxInstance instance = null;
+            bool added = false;
+            OnUi(() =>
             {
-                instance.Id = _nextId++;
-            }
-            instance.Name = string.IsNullOrEmpty(accountName) ? "Instance " + instance.Id : accountName;
-            instance.AccountName = accountName;
-            instance.Pid = pid;
-            instance.StartedUtc = started;
-            instance.IsAdopted = adopted;
-            instance.Status = adopted ? "Running" : "Awaiting login";
-            instance.Uptime = "0s";
-            instance.ProfileName = profile;
-
-            OnUi(() => Instances.Add(instance));
-            LogMessage("Instance " + instance.Id + " added (PID " + pid + (adopted ? ", adopted" : "") + ")");
+                lock (_syncLock)
+                {
+                    instance = Instances.FirstOrDefault(i => i.Pid == pid && i.IsActive && i.StartedUtc == started);
+                    if (instance == null)
+                    {
+                        instance = new RobloxInstance();
+                        instance.Id = _nextId++;
+                        instance.Name = string.IsNullOrEmpty(accountName) ? "Instance " + instance.Id : accountName;
+                        instance.Pid = pid;
+                        instance.StartedUtc = started;
+                        instance.IsAdopted = adopted;
+                        instance.Status = adopted ? "Running" : "Awaiting login";
+                        instance.Uptime = "0s";
+                        instance.AccountName = accountName;
+                        instance.ProfileName = profile;
+                        Instances.Add(instance);
+                        added = true;
+                    }
+                    if (!string.IsNullOrEmpty(accountName))
+                    {
+                        instance.AccountName = accountName;
+                        instance.Name = accountName;
+                        instance.IsAdopted = false;
+                    }
+                    if (profile != null) instance.ProfileName = profile;
+                }
+            });
+            if (added) LogMessage("Instance " + instance.Id + " added (PID " + pid + (adopted ? ", adopted" : "") + ")");
             return instance;
         }
 
@@ -664,7 +697,7 @@ namespace RbxMulti
         [System.Runtime.InteropServices.DllImport("user32.dll")]
         private static extern uint GetWindowThreadProcessId(IntPtr hwnd, out uint pid);
 
-        private static HashSet<int> PidsWithVisibleWindow()
+        internal static HashSet<int> PidsWithVisibleWindow()
         {
             HashSet<int> visible = new HashSet<int>();
             EnumWindows(delegate(IntPtr hwnd, IntPtr lParam)
@@ -683,10 +716,10 @@ namespace RbxMulti
         /// <summary>
         /// Recent Roblox builds keep a hidden "tray" client alive (autostart with --launch-to-tray, and a
         /// client whose window was closed stays resident). A new roblox-player launch is handed to that
-        /// resident process instead of starting a second client, so only one game ever runs. Ends every
-        /// RobloxPlayerBeta without a visible window that either carries --launch-to-tray or is over a
-        /// minute old, so the next launch starts its own process. Tracked game clients are protected
-        /// even while hidden or still loading. Returns how many were ended. Never throws.
+        /// resident process instead of starting a second client, so only one game ever runs. Only
+        /// positively identified --launch-to-tray clients without a visible window are ended.
+        /// Age alone is not evidence of an idle tray: a hidden/slow game must not be killed.
+        /// Tracked games are protected even while hidden or loading. Never throws.
         /// </summary>
         public static int EndIdleTrayClients(IEnumerable<int> protectedPids)
         {
@@ -717,15 +750,10 @@ namespace RbxMulti
                 {
                     try
                     {
-                        if (protectedSet.Contains(p.Id) || visible.Contains(p.Id))
-                        {
-                            continue;
-                        }
                         string cmd;
-                        bool trayFlag = commandLines.TryGetValue(p.Id, out cmd) && cmd != null
-                            && cmd.IndexOf("--launch-to-tray", StringComparison.OrdinalIgnoreCase) >= 0;
-                        bool old = (DateTime.Now - p.StartTime).TotalSeconds > 60;
-                        if (trayFlag || old)
+                        commandLines.TryGetValue(p.Id, out cmd);
+                        if (IsIdleTrayClient(visible.Contains(p.Id), protectedSet.Contains(p.Id), cmd)
+                            && !PidsWithVisibleWindow().Contains(p.Id))
                         {
                             p.Kill();
                             ended++;
@@ -744,6 +772,17 @@ namespace RbxMulti
             {
             }
             return ended;
+        }
+
+        internal static bool IsIdleTrayClient(bool visible, bool trackedGame, string commandLine)
+        {
+            if (visible || trackedGame || string.IsNullOrEmpty(commandLine)) return false;
+            foreach (string argument in commandLine.Split(new char[] { ' ', '\t' }, StringSplitOptions.RemoveEmptyEntries))
+            {
+                if (string.Equals(argument.Trim('"'), "--launch-to-tray", StringComparison.OrdinalIgnoreCase))
+                    return true;
+            }
+            return false;
         }
     }
 }

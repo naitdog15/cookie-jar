@@ -16,13 +16,21 @@ namespace RbxMulti
         private readonly object _gate = new object();
         private readonly string _mutexName;
         private readonly string _eventName;
+        private readonly Action<Thread> _startThread;
         private Holder _holder;
 
         // Separate names let regression tests use isolated kernel objects, never real Roblox.
         internal MultiInstanceGuard(string mutexName, string eventName)
+            : this(mutexName, eventName, delegate(Thread thread) { thread.Start(); })
+        {
+        }
+
+        // The starter seam lets tests reproduce resource failures without exhausting the machine.
+        internal MultiInstanceGuard(string mutexName, string eventName, Action<Thread> startThread)
         {
             _mutexName = mutexName;
             _eventName = eventName;
+            _startThread = startThread;
         }
 
         internal bool EnsureReady(out string error)
@@ -38,7 +46,13 @@ namespace RbxMulti
                 }
 
                 _holder = new Holder(_mutexName, _eventName);
-                _holder.Thread.Start();
+                try { _startThread(_holder.Thread); }
+                catch (Exception)
+                {
+                    StopHolder();
+                    error = "Could not start the multi-instance guard. Try again when more system resources are available.";
+                    return false;
+                }
                 if (_holder.Prepared.WaitOne(5000) && _holder.Ready) return true;
 
                 error = _holder.Error ?? "The multi-instance guard did not become ready.";
@@ -56,7 +70,8 @@ namespace RbxMulti
         {
             if (_holder == null) return true;
             _holder.Stop.Set();
-            if (!_holder.Thread.Join(1000)) return false;
+            if ((_holder.Thread.ThreadState & ThreadState.Unstarted) == 0
+                && !_holder.Thread.Join(1000)) return false;
             _holder.Prepared.Close();
             _holder.Stop.Close();
             _holder = null;

@@ -7,8 +7,8 @@ namespace RbxMulti
 {
     /// <summary>
     /// Locates the Roblox player executable (RobloxPlayerBeta.exe) on this machine.
-    /// Search order: LOCALAPPDATA, Program Files, Program Files (x86) Versions folders,
-    /// then the roblox-player protocol registry entries. Results are cached briefly.
+    /// Prefers the registered player/launcher installation and Roblox environment paths.
+    /// If none resolves, compares players across all standard Versions folders. Results are cached briefly.
     /// Never throws; failures return null.
     /// </summary>
     public static class RobloxLocator
@@ -24,7 +24,8 @@ namespace RbxMulti
         private static bool cacheHasValue;
 
         /// <summary>
-        /// Returns the full path to the newest RobloxPlayerBeta.exe, or null if none is found.
+        /// Returns the registered RobloxPlayerBeta.exe, or the newest standard-install fallback.
+        /// Returns null if none is found.
         /// </summary>
         public static string FindPlayerExe()
         {
@@ -155,16 +156,79 @@ namespace RbxMulti
 
         private static string Resolve()
         {
-            foreach (string versionsPath in GetVersionsRoots())
+            return ResolveCandidates(
+                ReadRegisteredCommands(RegistryHive.CurrentUser), ReadRegisteredPaths(RegistryHive.CurrentUser),
+                ReadRegisteredCommands(RegistryHive.LocalMachine), ReadRegisteredPaths(RegistryHive.LocalMachine),
+                GetVersionsRoots());
+        }
+
+        /// <summary>
+        /// Uses the same selection policy for real registry inputs and isolated filesystem fixtures.
+        /// Commands and environment paths arrive in registry precedence order. Never executes them.
+        /// </summary>
+        internal static string ResolveCandidates(IEnumerable<string> registeredCommands,
+            IEnumerable<string> registeredPaths, IEnumerable<string> versionsRoots)
+        {
+            return ResolveCandidates(registeredCommands, registeredPaths, null, null, versionsRoots);
+        }
+
+        /// <summary>
+        /// A per-user handler can be a wrapper whose player lives in its environment path.
+        /// Finish resolving that user installation before considering any machine registration.
+        /// </summary>
+        internal static string ResolveCandidates(IEnumerable<string> userCommands, IEnumerable<string> userPaths,
+            IEnumerable<string> machineCommands, IEnumerable<string> machinePaths, IEnumerable<string> versionsRoots)
+        {
+            string registered = ResolveRegistration(userCommands, userPaths);
+            if (registered != null) return registered;
+            registered = ResolveRegistration(machineCommands, machinePaths);
+            if (registered != null) return registered;
+
+            string newest = null;
+            if (versionsRoots != null)
             {
-                string found = SearchVersionsPath(versionsPath);
-                if (found != null)
+                foreach (string versionsPath in versionsRoots)
+                    newest = NewerPlayer(SearchVersionsPath(versionsPath), newest);
+            }
+            return newest;
+        }
+
+        private static string ResolveRegistration(IEnumerable<string> registeredCommands, IEnumerable<string> registeredPaths)
+        {
+            if (registeredCommands != null)
+            {
+                foreach (string command in registeredCommands)
                 {
-                    return found;
+                    string player = ExeFromPath(ParseCommandPath(command));
+                    if (player != null) return player;
                 }
             }
 
-            return SearchRegistry();
+            if (registeredPaths != null)
+            {
+                foreach (string path in registeredPaths)
+                {
+                    string player = ExeFromPath(ParseCommandPath(path));
+                    if (player != null) return player;
+                }
+            }
+
+            return null;
+        }
+
+        private static string NewerPlayer(string candidate, string current)
+        {
+            try
+            {
+                if (candidate != null && (current == null
+                    || File.GetLastWriteTimeUtc(candidate) > File.GetLastWriteTimeUtc(current)))
+                    return candidate;
+            }
+            catch (Exception)
+            {
+                // One unreadable candidate must not hide the other installations.
+            }
+            return current;
         }
 
         private static List<string> GetVersionsRoots()
@@ -208,7 +272,6 @@ namespace RbxMulti
                 }
 
                 string newest = null;
-                DateTime newestTime = DateTime.MinValue;
 
                 DirectoryInfo versionsDir = new DirectoryInfo(versionsPath);
                 DirectoryInfo[] versionDirs = versionsDir.GetDirectories();
@@ -219,12 +282,7 @@ namespace RbxMulti
 
                     if (File.Exists(playerExe))
                     {
-                        FileInfo fi = new FileInfo(playerExe);
-                        if (fi.LastWriteTimeUtc > newestTime)
-                        {
-                            newestTime = fi.LastWriteTimeUtc;
-                            newest = playerExe;
-                        }
+                        newest = NewerPlayer(playerExe, newest);
                     }
                 }
 
@@ -237,37 +295,30 @@ namespace RbxMulti
             }
         }
 
-        private static string SearchRegistry()
+        private static List<string> ReadRegisteredCommands(RegistryHive hive)
         {
+            List<string> commands = new List<string>();
             RegistryView[] views = new RegistryView[] { RegistryView.Registry64, RegistryView.Registry32 };
-            RegistryHive[] hives = new RegistryHive[] { RegistryHive.CurrentUser, RegistryHive.LocalMachine };
 
             // Protocol handler command lines (default value holds the launcher path)
-            foreach (RegistryHive hive in hives)
-            {
-                foreach (RegistryView view in views)
-                {
-                    string command = ReadDefaultValue(hive, view, ProtocolCommandSubKey);
-                    string commandPath = ParseCommandPath(command);
-                    string exe = ExeFromPath(commandPath);
-                    if (exe != null)
-                    {
-                        return exe;
-                    }
-                }
-            }
-
-            // ROBLOX Corporation environment entries (string values may hold install paths)
             foreach (RegistryView view in views)
             {
-                string exe = ExeFromStringValues(RegistryHive.CurrentUser, view, EnvironmentsSubKey);
-                if (exe != null)
-                {
-                    return exe;
-                }
+                commands.Add(ReadDefaultValue(hive, view, ProtocolCommandSubKey));
             }
 
-            return null;
+            return commands;
+        }
+
+        private static List<string> ReadRegisteredPaths(RegistryHive hive)
+        {
+            List<string> paths = new List<string>();
+            RegistryView[] views = new RegistryView[] { RegistryView.Registry64, RegistryView.Registry32 };
+            // Environment entries can identify an install even when a separate bootstrapper handles the protocol.
+            foreach (RegistryView view in views)
+            {
+                ReadStringValues(hive, view, EnvironmentsSubKey, paths);
+            }
+            return paths;
         }
 
         private static RegistryKey OpenSubKey(RegistryHive hive, RegistryView view, string subKey)
@@ -305,7 +356,7 @@ namespace RbxMulti
             }
         }
 
-        private static string ExeFromStringValues(RegistryHive hive, RegistryView view, string subKey)
+        private static void ReadStringValues(RegistryHive hive, RegistryView view, string subKey, List<string> values)
         {
             try
             {
@@ -313,17 +364,12 @@ namespace RbxMulti
                 {
                     if (key == null)
                     {
-                        return null;
+                        return;
                     }
 
                     foreach (string name in key.GetValueNames())
                     {
-                        string value = key.GetValue(name) as string;
-                        string exe = ExeFromPath(ParseCommandPath(value));
-                        if (exe != null)
-                        {
-                            return exe;
-                        }
+                        values.Add(key.GetValue(name) as string);
                     }
                 }
             }
@@ -331,8 +377,6 @@ namespace RbxMulti
             {
                 // Tolerate registry errors
             }
-
-            return null;
         }
 
         /// <summary>
