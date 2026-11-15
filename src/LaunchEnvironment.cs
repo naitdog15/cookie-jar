@@ -29,6 +29,19 @@ namespace RbxMulti
         }
         internal virtual int CloseSingletons(int pid) { return HandleCloser.CloseSingletons(pid); }
         internal virtual string FindPlayerExe() { return RobloxLocator.FindPlayerExe(); }
+        internal virtual List<int> GetInstallerPids() { return RobloxProcesses.GetInstallerPids(); }
+        /// <summary>Players from the last locator run whose version is higher than exe's. Empty when none or unknown.</summary>
+        internal virtual List<string> NewerPlayersThan(string exe)
+        {
+            List<string> newer = new List<string>();
+            PlayerCandidate chosen = null;
+            List<PlayerCandidate> all = RobloxLocator.GetLastCandidates();
+            foreach (PlayerCandidate c in all) if (string.Equals(c.ExePath, exe, StringComparison.OrdinalIgnoreCase)) chosen = c;
+            foreach (PlayerCandidate c in all)
+                if (c.Version != null && (chosen == null || chosen.Version == null || c.Version > chosen.Version) && c != chosen)
+                    newer.Add(c.ExePath + " (" + c.VersionText + ")");
+            return newer;
+        }
         internal virtual void ClearCache() { CacheCleaner.ClearCache(); }
         internal virtual bool GetTicket(string token, out string ticket, out bool expired, out string error)
         {

@@ -32,6 +32,144 @@ namespace RbxMulti
             GuardFailureStopsProfile(check);
             CacheCheckIsFresh(check);
             SingletonsClosedInNewClient(check);
+            InstallerClearsThenLaunches(check);
+            InstallerTimeout(check);
+            StarterExitStartsInstaller(check);
+            ProfileStopsOnUpdate(check);
+            HandOffWithoutInstaller(check);
+            UpdateClosedExistingClient(check);
+        }
+
+        private static bool AnyLog(List<string> logs, string part)
+        {
+            return logs.Exists(delegate(string s) { return s.Contains(part); });
+        }
+
+        private static void InstallerClearsThenLaunches(Action<string, bool> check)
+        {
+            using (FakeEnvironment environment = new FakeEnvironment())
+            {
+                List<string> logs = new List<string>();
+                InstanceManager manager = new InstanceManager(environment);
+                manager.Log += delegate(string s) { logs.Add(s); };
+                environment.Installers.Add(4242);
+                int ticks = 0;
+                environment.OnWait = delegate { if (++ticks == 4) environment.Installers.Clear(); };
+                AccountLaunchResult result = manager.LaunchAccount(TestAccount(21), "test", 1, 10, CancellationToken.None);
+                check("launch waits for a running Roblox installer and then continues", result.Outcome == LaunchOutcome.Ok
+                    && environment.Starts == 1 && environment.GuardCalls == 1 && ticks >= 4);
+                check("installer wait is logged", AnyLog(logs, "Roblox installer running (PID 4242); waiting"));
+            }
+        }
+
+        private static void InstallerTimeout(Action<string, bool> check)
+        {
+            using (FakeEnvironment environment = new FakeEnvironment())
+            {
+                environment.Installers.Add(4242);
+                AccountLaunchResult result = new InstanceManager(environment).LaunchAccount(TestAccount(22), "test", 1, 10, CancellationToken.None);
+                check("installer that never finishes reports Roblox updating before any launch work", result.Outcome == LaunchOutcome.RobloxUpdating
+                    && environment.Starts == 0 && environment.GuardCalls == 0 && environment.Tokens.Count == 0);
+                check("installer timeout names the PID and Task Manager", result.Message != null
+                    && result.Message.Contains("4242") && result.Message.Contains("Task Manager"));
+                check("installer wait lasts the full 120 seconds", environment.Waits >= 120 * 4);
+            }
+            using (FakeEnvironment environment = new FakeEnvironment())
+            using (CancellationTokenSource cancel = new CancellationTokenSource())
+            {
+                environment.Installers.Add(4242);
+                environment.OnWait = delegate { cancel.Cancel(); };
+                AccountLaunchResult result = new InstanceManager(environment).LaunchAccount(TestAccount(23), "test", 1, 10, cancel.Token);
+                check("cancelling during the installer wait is reported as cancelled", result.Outcome == LaunchOutcome.Cancelled
+                    && environment.Starts == 0);
+            }
+        }
+
+        private static void StarterExitStartsInstaller(Action<string, bool> check)
+        {
+            using (FakeEnvironment environment = new FakeEnvironment())
+            {
+                List<string> logs = new List<string>();
+                InstanceManager manager = new InstanceManager(environment);
+                manager.Log += delegate(string s) { logs.Add(s); };
+                environment.Newer.Add("C:\\Fake PF\\RobloxPlayerBeta.exe (0.747.0.7471481)");
+                environment.OnStart = delegate { environment.Pids.Remove(environment.LastPid); environment.Installers.Add(5150); };
+                AccountLaunchResult result = manager.LaunchAccount(TestAccount(24), "test", 1, 10, CancellationToken.None);
+                check("starter that exits into an installer is reported as an update", result.Outcome == LaunchOutcome.RobloxUpdating
+                    && result.Message.Contains(Assembly.GetExecutingAssembly().Location) && result.Message.Contains("Newer installs found")
+                    && !result.Message.Contains("exited before its account window"));
+                check("installer start is logged", AnyLog(logs, "started an update (RobloxPlayerInstaller PID 5150)"));
+            }
+            using (FakeEnvironment environment = new FakeEnvironment())
+            {
+                environment.ShowWindows = false;
+                environment.OnStart = delegate { environment.Installers.Add(5151); };
+                AccountLaunchResult result = new InstanceManager(environment).LaunchAccount(TestAccount(25), "test", 1, 10, CancellationToken.None);
+                check("an installer started by a still-running starter is reported as an update", result.Outcome == LaunchOutcome.RobloxUpdating);
+            }
+            using (FakeEnvironment environment = new FakeEnvironment())
+            {
+                environment.OnPrepare = delegate { if (!environment.Installers.Contains(1)) environment.Installers.Add(1); };
+                AccountLaunchResult result = new InstanceManager(environment).LaunchAccount(TestAccount(26), "test", 1, 10, CancellationToken.None);
+                check("an installer already running at start is not counted as new", result.Outcome == LaunchOutcome.Ok);
+            }
+        }
+
+        private static void ProfileStopsOnUpdate(Action<string, bool> check)
+        {
+            using (FakeEnvironment environment = new FakeEnvironment())
+            {
+                environment.OnStart = delegate
+                {
+                    if (environment.Starts == 2) { environment.Pids.Remove(environment.LastPid); environment.Installers.Add(6000); }
+                };
+                string problem;
+                string summary = RunProfile(new InstanceManager(environment),
+                    new List<Account> { TestAccount(31), TestAccount(32), TestAccount(33) }, out problem);
+                check("profile stops when a launch starts a Roblox update", environment.Starts == 2 && summary.StartsWith("Stopped.")
+                    && summary.Contains("1 launched, 1 failed") && problem != null && problem.Contains("out of date"));
+            }
+            using (FakeEnvironment environment = new FakeEnvironment())
+            {
+                string problem;
+                string summary = RunProfile(new InstanceManager(environment),
+                    new List<Account> { TestAccount(34), TestAccount(35), TestAccount(36) }, out problem,
+                    delegate(string t) { if (t.StartsWith("Launching 3/3")) environment.Installers.Add(7000); });
+                check("profile does not start an account while an installer runs", environment.Starts == 2
+                    && summary.Contains("2 launched") && problem != null && problem.Contains("7000"));
+            }
+        }
+
+        private static void HandOffWithoutInstaller(Action<string, bool> check)
+        {
+            using (FakeEnvironment environment = new FakeEnvironment())
+            {
+                List<string> logs = new List<string>();
+                InstanceManager manager = new InstanceManager(environment);
+                manager.Log += delegate(string s) { logs.Add(s); };
+                int self = Process.GetCurrentProcess().Id;
+                environment.OnStart = delegate { environment.Pids.Remove(environment.LastPid); environment.Pids.Add(self); environment.Visible.Add(self); };
+                Account account = TestAccount(41);
+                AccountLaunchResult result = manager.LaunchAccount(account, "test", 1, 10, CancellationToken.None);
+                check("hand-off to one new player without an installer still succeeds", result.Outcome == LaunchOutcome.Ok
+                    && AnyLog(logs, "handed off to PID " + self) && manager.IsAccountRunning(account.Id));
+            }
+        }
+
+        private static void UpdateClosedExistingClient(Action<string, bool> check)
+        {
+            using (FakeEnvironment environment = new FakeEnvironment())
+            {
+                int previous = Process.GetCurrentProcess().Id;
+                environment.Pids.Add(previous);
+                environment.Visible.Add(previous);
+                InstanceManager manager = new InstanceManager(environment);
+                manager.AdoptRunning();
+                environment.OnStart = delegate { environment.Pids.Remove(previous); environment.Installers.Add(8000); };
+                AccountLaunchResult result = manager.LaunchAccount(TestAccount(51), "test", 1, 10, CancellationToken.None);
+                check("an update that closes an existing client is reported as such", result.Outcome == LaunchOutcome.RobloxUpdating
+                    && result.Message.Contains("closed the existing client"));
+            }
         }
 
         private static void SingletonsClosedInNewClient(Action<string, bool> check)
@@ -52,9 +190,14 @@ namespace RbxMulti
 
         private static string RunProfile(InstanceManager manager, List<Account> accounts, out string problem)
         {
+            return RunProfile(manager, accounts, out problem, delegate { });
+        }
+
+        private static string RunProfile(InstanceManager manager, List<Account> accounts, out string problem, Action<string> progress)
+        {
             ProfileRunner runner = new ProfileRunner(manager,
                 delegate { return RestrictResult.Create(RestrictLevel.Allow, "", ""); },
-                delegate { return true; }, delegate { });
+                delegate { return true; }, progress);
             return runner.Run(new LaunchProfile { Name = "Isolated tests", StaggerSeconds = 0 }, accounts,
                 CancellationToken.None, out problem);
         }
@@ -222,6 +365,8 @@ namespace RbxMulti
         {
             internal readonly HashSet<int> Pids = new HashSet<int>();
             internal readonly HashSet<int> Visible = new HashSet<int>();
+            internal readonly List<int> Installers = new List<int>();
+            internal readonly List<string> Newer = new List<string>();
             internal HashSet<int> Protected = new HashSet<int>();
             internal readonly List<string> Tokens = new List<string>();
             private readonly List<Process> _clients = new List<Process>();
@@ -240,6 +385,8 @@ namespace RbxMulti
                 _ready = new EventWaitHandle(false, EventResetMode.ManualReset, _prefix + ".ready");
             }
             internal override List<int> GetPids() { return new List<int>(Pids); }
+            internal override List<int> GetInstallerPids() { return new List<int>(Installers); }
+            internal override List<string> NewerPlayersThan(string exe) { return new List<string>(Newer); }
             internal override HashSet<int> VisiblePids() { return new HashSet<int>(Visible); }
             internal override int EndIdleTrayClients(IEnumerable<int> protectedPids)
             {

@@ -262,7 +262,8 @@ namespace RbxMulti
         TimedOut,
         Cancelled,
         Skipped,
-        MultiInstanceFailed
+        MultiInstanceFailed,
+        RobloxUpdating
     }
 
     public class AccountLaunchResult
@@ -311,6 +312,16 @@ namespace RbxMulti
                     skipped++;
                     _manager.WriteLog(who + ": skipped, already running");
                     continue;
+                }
+
+                List<int> installers;
+                if (i > 0 && _manager.IsRobloxInstallerRunning(out installers))
+                {
+                    problem = InstanceManager.InstallerRunningMessage(installers);
+                    _manager.WriteLog(who + ": not started. " + problem);
+                    _manager.WriteLog("Profile launch stopped: Roblox is updating.");
+                    stopped = true;
+                    break;
                 }
 
                 RestrictResult r = _evaluate();
@@ -366,6 +377,13 @@ namespace RbxMulti
                         problem = res.Message;
                         _manager.WriteLog(who + ": " + problem);
                         _manager.WriteLog("Profile launch stopped to protect existing Roblox sessions.");
+                        stopped = true;
+                        break;
+                    case LaunchOutcome.RobloxUpdating:
+                        failed++;
+                        problem = res.Message;
+                        _manager.WriteLog(who + ": " + problem);
+                        _manager.WriteLog("Profile launch stopped: Roblox is updating.");
                         stopped = true;
                         break;
                     default:

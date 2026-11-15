@@ -98,7 +98,10 @@ namespace RbxMulti
 
             AddToRow(root, BuildHeader(), 0, new Thickness(0, 0, 0, 12));
             AddToRow(root, BuildHardwareCard(), 1, new Thickness(0, 0, 0, 12));
-            AddToRow(root, BuildBanner(), 2, new Thickness(0, 0, 0, 12));
+            StackPanel bannerStack = new StackPanel();
+            bannerStack.Children.Add(BuildBanner());
+            bannerStack.Children.Add(BuildRobloxNotice());
+            AddToRow(root, bannerStack, 2, new Thickness(0, 0, 0, 12));
             AddToRow(root, BuildProfileCard(), 3, new Thickness(0, 0, 0, 12));
             AddToRow(root, BuildToolbar(), 4, new Thickness(0, 0, 0, 12));
             AddToRow(root, BuildInstanceArea(), 5, new Thickness(0, 0, 0, 12));
@@ -932,6 +935,7 @@ namespace RbxMulti
             RefreshAccountList();
             RefreshButtons();
 
+            RefreshRobloxNotice("before launch");
             ProfileRunner runner = new ProfileRunner(
                 _manager,
                 delegate { return (RestrictResult)Dispatcher.Invoke(new Func<RestrictResult>(EvaluateRestriction)); },
@@ -988,6 +992,7 @@ namespace RbxMulti
             if (problem != null)
             {
                 ShowTemporaryError(problem);
+                RefreshRobloxNotice("after launch");
             }
             RefreshAccountList();
             RefreshButtons();

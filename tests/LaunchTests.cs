@@ -42,6 +42,7 @@ namespace RbxMulti
                 GuardFailureTests.Run(Check);
                 LocatorTests.Run(Check);
                 LaunchPipelineTests.Run(Check);
+                RobloxRepairTests.Run(Check);
                 Console.WriteLine(_passed + " launch checks passed; no real clients or input used.");
                 return 0;
             }

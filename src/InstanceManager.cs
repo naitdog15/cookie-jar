@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Collections.ObjectModel;
 using System.Diagnostics;
+using System.Globalization;
 using System.Linq;
 using System.Threading;
 using System.Windows.Threading;
@@ -37,6 +38,61 @@ namespace RbxMulti
             "Waiting for Roblox to start - press Play on the Roblox website (watching for up to 90 seconds)...";
         private const int WatchSeconds = 90;
         private const int SettleSeconds = 15;
+
+        internal const int InstallerWaitSeconds = 120;
+
+        internal static string JoinPids(List<int> pids)
+        {
+            return string.Join(", ", pids.ConvertAll(delegate(int p) { return p.ToString(CultureInfo.InvariantCulture); }).ToArray());
+        }
+
+        internal static string InstallerRunningMessage(List<int> pids)
+        {
+            return "Roblox is installing an update (RobloxPlayerInstaller PID " + JoinPids(pids)
+                + " is still running). Wait for it to finish or end it in Task Manager, then start the profile again.";
+        }
+
+        public bool IsRobloxInstallerRunning(out List<int> pids) { pids = SafeInstallers(); return pids.Count > 0; }
+
+        private List<int> SafeInstallers()
+        {
+            List<int> l = null;
+            try { l = _launch.GetInstallerPids(); } catch (Exception) { }
+            return l ?? new List<int>();
+        }
+
+        private int NewInstaller(HashSet<int> before)
+        {
+            foreach (int i in SafeInstallers()) if (!before.Contains(i)) return i;
+            return 0;
+        }
+
+        /// <summary>Returns true once no installer runs. On false, remaining holds the PIDs still running (empty when cancelled).</summary>
+        private bool WaitForInstallers(CancellationToken ct, out List<int> remaining)
+        {
+            remaining = SafeInstallers();
+            if (remaining.Count == 0) return true;
+            LogMessage("Roblox installer running (PID " + JoinPids(remaining) + "); waiting");
+            DateTime until = _launch.UtcNow.AddSeconds(InstallerWaitSeconds);
+            while (remaining.Count > 0)
+            {
+                if (ct.IsCancellationRequested || _launch.UtcNow >= until) return false;
+                _launch.Wait(ct);
+                remaining = SafeInstallers();
+            }
+            LogMessage("Roblox installer finished; continuing the launch");
+            return true;
+        }
+
+        private string UpdateStartedMessage(string exe)
+        {
+            List<string> newer = null;
+            try { newer = _launch.NewerPlayersThan(exe); } catch (Exception) { }
+            string tail = (newer != null && newer.Count > 0) ? " Newer installs found: " + string.Join("; ", newer.ToArray()) + "."
+                : " No newer Roblox install was found on this PC, so Roblox has to download the update.";
+            return "Roblox started an update instead of the game: the player Cookie Jar used (" + exe + ") is out of date. "
+                + "Let the Roblox installer finish (do not launch again until it closes), then start the profile again." + tail;
+        }
 
         private int _watchGeneration;
         private volatile string _waitingText;
@@ -187,6 +243,13 @@ namespace RbxMulti
                         result.Outcome = LaunchOutcome.Cancelled;
                         return result;
                     }
+                    List<int> waitingFor;
+                    if (!WaitForInstallers(ct, out waitingFor))
+                    {
+                        if (ct.IsCancellationRequested) { result.Outcome = LaunchOutcome.Cancelled; return result; }
+                        LogMessage("Roblox installer still running after " + InstallerWaitSeconds + "s (PID " + JoinPids(waitingFor) + "); launch not started");
+                        result.Outcome = LaunchOutcome.RobloxUpdating; result.Message = InstallerRunningMessage(waitingFor); return result;
+                    }
                     List<int> protectedPids = TrackedPids();
                     if (_launch.EndIdleTrayClients(protectedPids) > 0)
                     {
@@ -203,6 +266,7 @@ namespace RbxMulti
                         return result;
                     }
 
+                    RobloxLocator.InvalidateCache();
                     string playerExe = _launch.FindPlayerExe();
                     if (string.IsNullOrEmpty(playerExe))
                     {
@@ -210,6 +274,7 @@ namespace RbxMulti
                         result.Message = "RobloxPlayerBeta.exe was not found. Install or update Roblox, then retry.";
                         return result;
                     }
+                    LogMessage("Using Roblox player " + playerExe);
                     if (mayClearCache && _launch.GetPids().Count == 0)
                     {
                         _launch.ClearCache();
@@ -234,16 +299,18 @@ namespace RbxMulti
 
                     string uri = TicketLauncher.BuildLaunchUri(ticket, placeId,
                         TicketLauncher.NewBrowserTrackerId(), TicketLauncher.UnixMs(DateTime.UtcNow));
+                    HashSet<int> installersBefore = new HashSet<int>();
                     try
                     {
                         ProcessStartInfo psi = TicketLauncher.BuildPlayerStartInfo(playerExe, uri);
+                        installersBefore = new HashSet<int>(SafeInstallers());
                         starter = _launch.StartPlayer(psi);
                         if (starter == null) throw new InvalidOperationException();
                     }
                     catch (Exception)
                     {
                         result.Outcome = LaunchOutcome.StartFailed;
-                        result.Message = "Windows could not start the installed Roblox player. Update Roblox with all games closed, then retry.";
+                        result.Message = "Windows could not start the installed Roblox player. Make sure no Roblox installer is running, then retry.";
                         return result;
                     }
 
@@ -253,7 +320,7 @@ namespace RbxMulti
                     if (launched == null)
                     {
                         result.Outcome = LaunchOutcome.MultiInstanceFailed;
-                        result.Message = "Roblox exited before it could be tracked. Update Roblox with all games closed, then retry.";
+                        result.Message = "Roblox exited before it could be tracked. Make sure no Roblox installer is running, then retry.";
                         return result;
                     }
                     lock (_syncLock) { _accountPids[account.Id] = starter.Id; }
@@ -291,13 +358,26 @@ namespace RbxMulti
 
                         List<int> current = _launch.GetPids();
                         int lostPid = protectedPids.Find(delegate(int existingPid) { return !current.Contains(existingPid); });
+                        int newInstaller = NewInstaller(installersBefore);
                         if (lostPid != 0)
                         {
+                            if (newInstaller != 0)
+                            {
+                                LogMessage("Existing Roblox client PID " + lostPid + " exited while Roblox updated (RobloxPlayerInstaller PID " + newInstaller + ")");
+                                result.Outcome = LaunchOutcome.RobloxUpdating;
+                                result.Message = "The Roblox update (RobloxPlayerInstaller PID " + newInstaller + ") closed the existing client (PID " + lostPid + "). " + UpdateStartedMessage(playerExe);
+                                return result;
+                            }
                             LogMessage("Existing Roblox client PID " + lostPid + " exited while PID " + pid + " was launching");
                             result.Outcome = LaunchOutcome.MultiInstanceFailed;
                             result.Message = "An existing Roblox client (PID " + lostPid + ") closed while another account was launching. "
                                 + "The profile was stopped to protect the remaining games. Export the log and retry.";
                             return result;
+                        }
+                        if (newInstaller != 0)
+                        {
+                            LogMessage("Roblox PID " + pid + " started an update (RobloxPlayerInstaller PID " + newInstaller + "); the selected player " + playerExe + " is outdated");
+                            result.Outcome = LaunchOutcome.RobloxUpdating; result.Message = UpdateStartedMessage(playerExe); return result;
                         }
                         if (StarterGone(starter, pid, current))
                         {
@@ -737,6 +817,14 @@ namespace RbxMulti
             catch
             {
             }
+            return pids;
+        }
+
+        /// <summary>Running RobloxPlayerInstaller PIDs. Read-only: never ends a process.</summary>
+        public static List<int> GetInstallerPids()
+        {
+            List<int> pids = new List<int>();
+            try { foreach (Process p in Process.GetProcessesByName("RobloxPlayerInstaller")) { try { pids.Add(p.Id); } catch { } finally { p.Dispose(); } } } catch { }
             return pids;
         }
 

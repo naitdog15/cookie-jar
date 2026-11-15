@@ -1,15 +1,27 @@
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
+using System.Globalization;
 using System.IO;
 using Microsoft.Win32;
 
 namespace RbxMulti
 {
+    /// <summary>One RobloxPlayerBeta.exe found by the locator.</summary>
+    public sealed class PlayerCandidate
+    {
+        public string ExePath;      // full path (Path.GetFullPath)
+        public string Source;       // "HKCU", "HKLM" or "scan"
+        public Version Version;     // null = unknown
+        public DateTime WriteUtc;   // DateTime.MinValue when unreadable
+        internal int SourceRank { get { return Source == "HKCU" ? 0 : (Source == "HKLM" ? 1 : 2); } }
+        public string VersionText { get { return Version == null ? "unknown" : Version.ToString(); } }
+    }
+
     /// <summary>
     /// Locates the Roblox player executable (RobloxPlayerBeta.exe) on this machine.
-    /// Prefers the registered player/launcher installation and Roblox environment paths.
-    /// If none resolves, compares players across all standard Versions folders. Results are cached briefly.
-    /// Never throws; failures return null.
+    /// Chooses the highest FileVersion among registered and scanned players; ties prefer registered over scanned, HKCU over HKLM, then the newer file.
+    /// Results are cached briefly. Never throws; failures return null.
     /// </summary>
     public static class RobloxLocator
     {
@@ -22,6 +34,14 @@ namespace RbxMulti
         private static string cachedExe;
         private static DateTime cachedAtUtc = DateTime.MinValue;
         private static bool cacheHasValue;
+        private static string[] lastLog = new string[0];
+        private static List<PlayerCandidate> lastCandidates = new List<PlayerCandidate>();
+
+        public static string[] GetLastResolutionLog() { lock (CacheLock) { return (string[])lastLog.Clone(); } }
+        public static List<PlayerCandidate> GetLastCandidates() { lock (CacheLock) { return new List<PlayerCandidate>(lastCandidates); } }
+
+        /// <summary>Forces a re-scan and returns the fresh candidate list (used by the repair audit).</summary>
+        public static List<PlayerCandidate> GetCandidatesFresh() { InvalidateCache(); FindPlayerExe(); return GetLastCandidates(); }
 
         /// <summary>
         /// Returns the registered RobloxPlayerBeta.exe, or the newest standard-install fallback.
@@ -156,64 +176,131 @@ namespace RbxMulti
 
         private static string Resolve()
         {
-            return ResolveCandidates(
-                ReadRegisteredCommands(RegistryHive.CurrentUser), ReadRegisteredPaths(RegistryHive.CurrentUser),
+            List<string> log = new List<string>();
+            List<PlayerCandidate> candidates;
+            string chosen = ResolveCore(ReadRegisteredCommands(RegistryHive.CurrentUser), ReadRegisteredPaths(RegistryHive.CurrentUser),
                 ReadRegisteredCommands(RegistryHive.LocalMachine), ReadRegisteredPaths(RegistryHive.LocalMachine),
-                GetVersionsRoots());
+                GetVersionsRoots(), ReadFileVersion, log, out candidates);
+            lock (CacheLock) { lastLog = log.ToArray(); lastCandidates = candidates; }
+            return chosen;
         }
 
-        /// <summary>
-        /// Uses the same selection policy for real registry inputs and isolated filesystem fixtures.
-        /// Commands and environment paths arrive in registry precedence order. Never executes them.
-        /// </summary>
         internal static string ResolveCandidates(IEnumerable<string> registeredCommands,
             IEnumerable<string> registeredPaths, IEnumerable<string> versionsRoots)
         {
             return ResolveCandidates(registeredCommands, registeredPaths, null, null, versionsRoots);
         }
 
-        /// <summary>
-        /// A per-user handler can be a wrapper whose player lives in its environment path.
-        /// Finish resolving that user installation before considering any machine registration.
-        /// </summary>
         internal static string ResolveCandidates(IEnumerable<string> userCommands, IEnumerable<string> userPaths,
             IEnumerable<string> machineCommands, IEnumerable<string> machinePaths, IEnumerable<string> versionsRoots)
         {
-            string registered = ResolveRegistration(userCommands, userPaths);
-            if (registered != null) return registered;
-            registered = ResolveRegistration(machineCommands, machinePaths);
-            if (registered != null) return registered;
-
-            string newest = null;
-            if (versionsRoots != null)
-            {
-                foreach (string versionsPath in versionsRoots)
-                    newest = NewerPlayer(SearchVersionsPath(versionsPath), newest);
-            }
-            return newest;
+            return ResolveCandidates(userCommands, userPaths, machineCommands, machinePaths, versionsRoots, ReadFileVersion, null);
         }
 
-        private static string ResolveRegistration(IEnumerable<string> registeredCommands, IEnumerable<string> registeredPaths)
+        internal static string ResolveCandidates(IEnumerable<string> userCommands, IEnumerable<string> userPaths,
+            IEnumerable<string> machineCommands, IEnumerable<string> machinePaths, IEnumerable<string> versionsRoots,
+            Func<string, Version> versionOf, List<string> log)
         {
-            if (registeredCommands != null)
-            {
-                foreach (string command in registeredCommands)
-                {
-                    string player = ExeFromPath(ParseCommandPath(command));
-                    if (player != null) return player;
-                }
-            }
+            List<PlayerCandidate> ignored;
+            return ResolveCore(userCommands, userPaths, machineCommands, machinePaths, versionsRoots, versionOf, log, out ignored);
+        }
 
-            if (registeredPaths != null)
+        internal static string ResolveCore(IEnumerable<string> userCommands, IEnumerable<string> userPaths,
+            IEnumerable<string> machineCommands, IEnumerable<string> machinePaths, IEnumerable<string> versionsRoots,
+            Func<string, Version> versionOf, List<string> log, out List<PlayerCandidate> candidates)
+        {
+            candidates = new List<PlayerCandidate>();
+            Dictionary<string, PlayerCandidate> seen = new Dictionary<string, PlayerCandidate>(StringComparer.OrdinalIgnoreCase);
+            AddRegistered(candidates, seen, userCommands, "HKCU", versionOf);
+            AddRegistered(candidates, seen, userPaths, "HKCU", versionOf);
+            AddRegistered(candidates, seen, machineCommands, "HKLM", versionOf);
+            AddRegistered(candidates, seen, machinePaths, "HKLM", versionOf);
+            if (versionsRoots != null)
+                foreach (string root in versionsRoots)
+                    foreach (string exe in ListPlayers(root)) AddCandidate(candidates, seen, exe, "scan", versionOf);
+            PlayerCandidate best = null;
+            foreach (PlayerCandidate c in candidates) if (best == null || CompareCandidates(c, best) > 0) best = c;
+            if (log != null)
             {
-                foreach (string path in registeredPaths)
-                {
-                    string player = ExeFromPath(ParseCommandPath(path));
-                    if (player != null) return player;
-                }
+                foreach (PlayerCandidate c in candidates) log.Add("candidate " + c.ExePath + " version=" + c.VersionText + " source=" + c.Source);
+                if (best != null) log.Add("chosen " + best.ExePath);
             }
+            return best == null ? null : best.ExePath;
+        }
 
-            return null;
+        private static void AddRegistered(List<PlayerCandidate> list, Dictionary<string, PlayerCandidate> seen,
+            IEnumerable<string> entries, string source, Func<string, Version> versionOf)
+        {
+            if (entries == null) return;
+            foreach (string e in entries)
+            {
+                string exe = ExeFromPath(ParseCommandPath(e));
+                if (exe != null) AddCandidate(list, seen, exe, source, versionOf);
+            }
+        }
+
+        private static void AddCandidate(List<PlayerCandidate> list, Dictionary<string, PlayerCandidate> seen,
+            string exe, string source, Func<string, Version> versionOf)
+        {
+            string full;
+            try { full = Path.GetFullPath(exe); } catch (Exception) { return; }
+            if (seen.ContainsKey(full)) return; // the first source seen wins; input order is HKCU, HKLM, scan
+            PlayerCandidate c = new PlayerCandidate();
+            c.ExePath = full;
+            c.Source = source;
+            try { c.Version = versionOf == null ? null : versionOf(full); } catch (Exception) { c.Version = null; }
+            try { c.WriteUtc = File.GetLastWriteTimeUtc(full); } catch (Exception) { c.WriteUtc = DateTime.MinValue; }
+            seen[full] = c;
+            list.Add(c);
+        }
+
+        /// <summary>Greater than 0 when a is better than b.</summary>
+        internal static int CompareCandidates(PlayerCandidate a, PlayerCandidate b)
+        {
+            if (a.Version != null || b.Version != null)
+            {
+                if (a.Version == null) return -1;
+                if (b.Version == null) return 1;
+                int v = a.Version.CompareTo(b.Version);
+                if (v != 0) return v;
+            }
+            if (a.SourceRank != b.SourceRank) return b.SourceRank - a.SourceRank; // registered beats scan, then HKCU beats HKLM
+            return a.WriteUtc.CompareTo(b.WriteUtc);
+        }
+
+        internal static Version ReadFileVersion(string path)
+        {
+            try
+            {
+                FileVersionInfo info = FileVersionInfo.GetVersionInfo(path);
+                Version parsed = ParseVersionText(info.FileVersion);
+                if (parsed != null) return parsed;
+                if (info.FileMajorPart == 0 && info.FileMinorPart == 0 && info.FileBuildPart == 0 && info.FilePrivatePart == 0) return null;
+                return new Version(info.FileMajorPart, info.FileMinorPart, info.FileBuildPart, info.FilePrivatePart);
+            }
+            catch (Exception) { return null; }
+        }
+
+        /// <summary>Accepts "0, 747, 0, 7471481", "0.747.0.7471481" and "4.8.9037.0 built by: X". Null for empty, unparsable or all-zero text.</summary>
+        internal static Version ParseVersionText(string text)
+        {
+            if (string.IsNullOrEmpty(text)) return null;
+            int cut = 0;
+            while (cut < text.Length && "0123456789., ".IndexOf(text[cut]) >= 0) cut++;
+            string[] parts = text.Substring(0, cut).Split(new char[] { ',', '.' }, StringSplitOptions.RemoveEmptyEntries);
+            if (parts.Length < 2 || parts.Length > 4) return null;
+            int[] n = new int[4];
+            for (int i = 0; i < parts.Length; i++)
+                if (!int.TryParse(parts[i].Trim(), NumberStyles.None, CultureInfo.InvariantCulture, out n[i])) return null;
+            if (n[0] == 0 && n[1] == 0 && n[2] == 0 && n[3] == 0) return null;
+            return new Version(n[0], n[1], n[2], n[3]);
+        }
+
+        private static string NewestByWriteTime(List<string> players)
+        {
+            string newest = null;
+            foreach (string p in players) newest = NewerPlayer(p, newest);
+            return newest;
         }
 
         private static string NewerPlayer(string candidate, string current)
@@ -262,37 +349,31 @@ namespace RbxMulti
             }
         }
 
-        private static string SearchVersionsPath(string versionsPath)
+        /// <summary>Every version-*\RobloxPlayerBeta.exe under a Versions folder. Never throws.</summary>
+        internal static List<string> ListPlayers(string versionsPath)
         {
+            List<string> players = new List<string>();
             try
             {
                 if (string.IsNullOrEmpty(versionsPath) || !Directory.Exists(versionsPath))
                 {
-                    return null;
+                    return players;
                 }
 
-                string newest = null;
-
-                DirectoryInfo versionsDir = new DirectoryInfo(versionsPath);
-                DirectoryInfo[] versionDirs = versionsDir.GetDirectories();
-
-                foreach (DirectoryInfo versionDir in versionDirs)
+                foreach (DirectoryInfo versionDir in new DirectoryInfo(versionsPath).GetDirectories())
                 {
                     string playerExe = Path.Combine(versionDir.FullName, PlayerExeName);
-
                     if (File.Exists(playerExe))
                     {
-                        newest = NewerPlayer(playerExe, newest);
+                        players.Add(playerExe);
                     }
                 }
-
-                return newest;
             }
             catch (Exception)
             {
                 // Tolerate access errors silently
-                return null;
             }
+            return players;
         }
 
         private static List<string> ReadRegisteredCommands(RegistryHive hive)
@@ -383,7 +464,7 @@ namespace RbxMulti
         /// Extracts the executable path from a shell command line such as
         /// "C:\...\RobloxPlayerLauncher.exe" "%1".
         /// </summary>
-        private static string ParseCommandPath(string command)
+        internal static string ParseCommandPath(string command)
         {
             if (string.IsNullOrEmpty(command))
             {
@@ -457,7 +538,7 @@ namespace RbxMulti
                         return inFolder;
                     }
 
-                    return SearchVersionsPath(path);
+                    return NewestByWriteTime(ListPlayers(path));
                 }
             }
             catch (Exception)

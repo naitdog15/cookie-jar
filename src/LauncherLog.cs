@@ -65,6 +65,7 @@ namespace RbxMulti
                     + ", admin=" + HandleCloser.IsElevated()
                     + ", " + Environment.OSVersion.VersionString
                     + ", Roblox player " + roblox);
+                foreach (string line in RobloxLocator.GetLastResolutionLog()) Write("Start-up: Roblox " + line);
             }
             catch
             {

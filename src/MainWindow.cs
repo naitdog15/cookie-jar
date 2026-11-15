@@ -228,6 +228,7 @@ namespace RbxMulti
 
             _manager.Log += AppendLogSafe;
             LauncherLog.WriteStartup();
+            RefreshRobloxNotice("start-up");
             _manager.Instances.CollectionChanged += OnInstancesChanged;
             Theme.Changed += OnThemeChanged;
             Closing += OnClosing;
