@@ -31,6 +31,18 @@ namespace RbxMulti
             SixAccountProfile(check);
             GuardFailureStopsProfile(check);
             CacheCheckIsFresh(check);
+            SingletonsClosedInNewClient(check);
+        }
+
+        private static void SingletonsClosedInNewClient(Action<string, bool> check)
+        {
+            using (FakeEnvironment environment = new FakeEnvironment())
+            {
+                AccountLaunchResult result = new InstanceManager(environment).LaunchAccount(TestAccount(11),
+                    "test", 1, 10, CancellationToken.None);
+                check("new client's singleton handles are closed after start", result.Outcome == LaunchOutcome.Ok
+                    && environment.SingletonCloses.Count == 1 && environment.SingletonCloses[0] == environment.LastPid);
+            }
         }
 
         private static Account TestAccount(int index)
@@ -243,6 +255,8 @@ namespace RbxMulti
                 error = GuardReady ? null : "Simulated guard conflict";
                 return GuardReady;
             }
+            internal readonly List<int> SingletonCloses = new List<int>();
+            internal override int CloseSingletons(int pid) { SingletonCloses.Add(pid); return 1; }
             internal override string FindPlayerExe() { return Assembly.GetExecutingAssembly().Location; }
             internal override void ClearCache() { CacheClears++; }
             internal override bool GetTicket(string token, out string ticket, out bool expired, out string error)

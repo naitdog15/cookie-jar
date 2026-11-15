@@ -19,9 +19,15 @@ namespace RbxMulti
         }
         internal virtual bool PrepareMultiInstance(out string error, out int closed)
         {
+            // 1.2.2 behaviour: free singleton handles still held by running clients, then close
+            // the new client's own handles right after it starts (CloseSingletons below).
+            // Holding the names ourselves (the 1.3.x MultiInstanceGuard) made each new client take
+            // Roblox's single-instance path and end the older games, so it is no longer used.
+            error = null;
             closed = HandleCloser.CloseSingletonsInAllRoblox();
-            return MultiInstanceGuard.Shared.EnsureReady(out error);
+            return true;
         }
+        internal virtual int CloseSingletons(int pid) { return HandleCloser.CloseSingletons(pid); }
         internal virtual string FindPlayerExe() { return RobloxLocator.FindPlayerExe(); }
         internal virtual void ClearCache() { CacheCleaner.ClearCache(); }
         internal virtual bool GetTicket(string token, out string ticket, out bool expired, out string error)

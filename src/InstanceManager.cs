@@ -143,7 +143,6 @@ namespace RbxMulti
                 LogMessage(error);
                 return false;
             }
-            LogMessage("Multi-instance guards held (singleton mutex and routing-event name)");
             return true;
         }
 
@@ -194,7 +193,7 @@ namespace RbxMulti
                         LogMessage("Ended idle Roblox tray client(s) so the launch gets its own process");
                     }
                     HashSet<int> known = new HashSet<int>(_launch.GetPids());
-                    protectedPids.RemoveAll(delegate(int pid) { return !known.Contains(pid); });
+                    protectedPids.RemoveAll(delegate(int existing) { return !known.Contains(existing); });
 
                     string guardError;
                     if (!PrepareMultiInstance(out guardError))
@@ -259,10 +258,31 @@ namespace RbxMulti
                     }
                     lock (_syncLock) { _accountPids[account.Id] = starter.Id; }
 
-                    DateTime deadline = _launch.UtcNow.AddSeconds(timeoutSeconds);
+                    int pid = starter.Id;
+                    DateTime started = _launch.UtcNow;
+                    DateTime deadline = started.AddSeconds(timeoutSeconds);
                     DateTime visibleSince = DateTime.MinValue;
+                    bool singletonClosed = false, singletonWarned = false;
                     while (_launch.UtcNow < deadline)
                     {
+                        // Close the new client's singleton handles as soon as it creates them, so the
+                        // next launch cannot find them and route to (and end) this or older games.
+                        if (!singletonClosed)
+                        {
+                            int closedNow = 0;
+                            try { closedNow = _launch.CloseSingletons(pid); } catch (Exception) { }
+                            if (closedNow > 0)
+                            {
+                                singletonClosed = true;
+                                LogMessage("Closed singleton handle of new client (PID " + pid + ")");
+                            }
+                            else if (!singletonWarned && (_launch.UtcNow - started).TotalSeconds >= 10)
+                            {
+                                singletonWarned = true;
+                                LogMessage("Warning: no singleton handle found for PID " + pid + " within 10s");
+                            }
+                        }
+
                         if (ct.IsCancellationRequested)
                         {
                             result.Outcome = LaunchOutcome.Cancelled;
@@ -270,24 +290,50 @@ namespace RbxMulti
                         }
 
                         List<int> current = _launch.GetPids();
-                        if (protectedPids.Exists(delegate(int existingPid) { return !current.Contains(existingPid); }))
+                        int lostPid = protectedPids.Find(delegate(int existingPid) { return !current.Contains(existingPid); });
+                        if (lostPid != 0)
                         {
+                            LogMessage("Existing Roblox client PID " + lostPid + " exited while PID " + pid + " was launching");
                             result.Outcome = LaunchOutcome.MultiInstanceFailed;
-                            result.Message = "An existing Roblox client exited during this launch. "
-                                + "Update Roblox once with all games closed, then retry the profile.";
+                            result.Message = "An existing Roblox client (PID " + lostPid + ") closed while another account was launching. "
+                                + "The profile was stopped to protect the remaining games. Export the log and retry.";
                             return result;
                         }
-                        if (starter.HasExited)
+                        if (StarterGone(starter, pid, current))
                         {
+                            // The started player may hand off to another RobloxPlayerBeta process.
+                            // Follow exactly one new, unknown player instead of failing the launch.
+                            List<int> tracked = TrackedPids();
+                            int handoff = 0, newCount = 0;
+                            foreach (int candidate in current)
+                            {
+                                if (candidate == pid || known.Contains(candidate) || tracked.Contains(candidate)) continue;
+                                handoff = candidate;
+                                newCount++;
+                            }
+                            if (newCount == 1)
+                            {
+                                LogMessage("Roblox PID " + pid + " handed off to PID " + handoff + "; tracking the new process");
+                                known.Add(pid);
+                                pid = handoff;
+                                RobloxInstance followed = Adopt(pid, false, profileName, account.Username);
+                                if (followed != null) launched = followed;
+                                lock (_syncLock) { _accountPids[account.Id] = pid; }
+                                singletonClosed = false;
+                                singletonWarned = false;
+                                started = _launch.UtcNow;
+                                visibleSince = DateTime.MinValue;
+                                _launch.Wait(ct);
+                                continue;
+                            }
+                            LogMessage("Roblox PID " + pid + " exited before its account window was ready");
                             result.Outcome = LaunchOutcome.MultiInstanceFailed;
-                            result.Message = "Roblox exited before its account window was ready. "
-                                + "Update Roblox once with all games closed, then retry the profile.";
+                            result.Message = "Roblox exited before its account window was ready. Export the log and retry the profile.";
                             return result;
                         }
 
-                        // Only adopt the player we started for this ticket, never an unrelated
-                        // client or updater that happens to appear during the same polling window.
-                        int pid = starter.Id;
+                        // Only adopt the player we started for this ticket (or its single hand-off),
+                        // never an unrelated client that happens to appear during the same window.
                         if (!_launch.HasWindow(pid))
                         {
                             visibleSince = DateTime.MinValue;
@@ -299,7 +345,7 @@ namespace RbxMulti
                         else if ((_launch.UtcNow - visibleSince).TotalSeconds >= 2)
                         {
                             OnUi(() => launched.Status = "Running");
-                            LogMessage("New account client ready (PID " + pid + ", multi-instance guards held)");
+                            LogMessage("New account client ready (PID " + pid + (singletonClosed ? ", singleton closed" : ", no singleton handle seen") + ")");
                             result.Outcome = LaunchOutcome.Ok;
                             return result;
                         }
@@ -321,6 +367,13 @@ namespace RbxMulti
                     if (starter != null) starter.Dispose();
                 }
             }
+        }
+
+        private static bool StarterGone(Process starter, int pid, List<int> current)
+        {
+            if (!current.Contains(pid)) return true;
+            if (starter.Id != pid) return false;
+            try { return starter.HasExited; } catch (Exception) { return false; }
         }
 
         /// <summary>Adds visible already-running games, including minimised ones. Hidden tray clients are not games.</summary>
@@ -437,6 +490,7 @@ namespace RbxMulti
             DateTime deadline = DateTime.UtcNow.AddSeconds(WatchSeconds);
             DateTime lastAdopt = DateTime.MinValue;
             int adoptedCount = 0;
+            HashSet<int> singletonsClosed = new HashSet<int>();
 
             try
             {
@@ -447,6 +501,11 @@ namespace RbxMulti
                         if (known.Contains(pid))
                         {
                             continue;
+                        }
+                        if (!singletonsClosed.Contains(pid) && _launch.CloseSingletons(pid) > 0)
+                        {
+                            singletonsClosed.Add(pid);
+                            LogMessage("Closed singleton handle of new client (PID " + pid + ")");
                         }
                         if (WindowManager.FindWindowForPid(pid, 0) == IntPtr.Zero) continue;
                         known.Add(pid);
