@@ -1,5 +1,6 @@
 ﻿using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.Globalization;
 using System.IO;
 using System.Net;
@@ -62,6 +63,21 @@ namespace RbxMulti
                 + "+placelauncherurl:" + Uri.EscapeDataString(placeLauncher)
                 + "+browsertrackerid:" + id
                 + "+robloxLocale:en_us+gameLocale:en_us+channel:+LaunchExp:InApp";
+        }
+
+        /// <summary>
+        /// Sends the ticket URI straight to the installed player. The shell protocol handler can
+        /// route to a resident app or bootstrapper/updater which replaces existing game sessions.
+        /// Never log Arguments: it contains a one-time authentication ticket.
+        /// </summary>
+        internal static ProcessStartInfo BuildPlayerStartInfo(string playerExe, string launchUri)
+        {
+            ProcessStartInfo info = new ProcessStartInfo();
+            info.FileName = playerExe;
+            info.Arguments = "\"" + launchUri + "\"";
+            info.WorkingDirectory = Path.GetDirectoryName(playerExe);
+            info.UseShellExecute = false;
+            return info;
         }
 
         /// <summary>Extracts id and name from {"id":1,"name":"x",...}. Returns false when either is missing.</summary>
@@ -245,7 +261,8 @@ namespace RbxMulti
         StartFailed,
         TimedOut,
         Cancelled,
-        Skipped
+        Skipped,
+        MultiInstanceFailed
     }
 
     public class AccountLaunchResult
@@ -342,6 +359,13 @@ namespace RbxMulti
                         break;
                     case LaunchOutcome.Cancelled:
                         _manager.WriteLog(who + ": cancelled");
+                        stopped = true;
+                        break;
+                    case LaunchOutcome.MultiInstanceFailed:
+                        failed++;
+                        problem = res.Message;
+                        _manager.WriteLog(who + ": " + problem);
+                        _manager.WriteLog("Profile launch stopped to protect existing Roblox sessions.");
                         stopped = true;
                         break;
                     default:

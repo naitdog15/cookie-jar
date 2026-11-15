@@ -57,7 +57,7 @@ namespace RbxMulti
             {
                 try
                 {
-                    int trayEnded = RobloxProcesses.EndIdleTrayClients();
+                    int trayEnded = RobloxProcesses.EndIdleTrayClients(TrackedPids());
                     if (trayEnded > 0)
                     {
                         LogMessage("Ended " + trayEnded + " idle Roblox tray client(s) so the new launch gets its own process");
@@ -71,8 +71,7 @@ namespace RbxMulti
                         known.Add(tracked);
                     }
 
-                    int closedCount = HandleCloser.CloseSingletonsInAllRoblox();
-                    LogMessage("Closed " + closedCount + " singleton handles in existing Roblox processes");
+                    if (!PrepareMultiInstance(out error)) return false;
 
                     if (running.Count == 0)
                     {
@@ -126,6 +125,19 @@ namespace RbxMulti
             }
         }
 
+        private bool PrepareMultiInstance(out string error)
+        {
+            int closed = HandleCloser.CloseSingletonsInAllRoblox();
+            LogMessage("Closed " + closed + " singleton handles in existing Roblox processes");
+            if (!MultiInstanceGuard.Shared.EnsureReady(out error))
+            {
+                LogMessage(error);
+                return false;
+            }
+            LogMessage("Multi-instance guards held (singleton mutex and routing-event name)");
+            return true;
+        }
+
         /// <summary>True when a client launched for this stored account is still running.</summary>
         public bool IsAccountRunning(string accountId)
         {
@@ -151,27 +163,45 @@ namespace RbxMulti
         }
 
         /// <summary>
-        /// Launches one stored account straight into the place: ticket, roblox-player URI, then waits
-        /// (up to timeoutSeconds) for the new client, adopts it and closes its singleton handle.
+        /// Launches one stored account straight into the installed player using its own ticket.
+        /// Waits for a stable, visible new client before adopting it or advancing to the next account.
         /// </summary>
         public AccountLaunchResult LaunchAccount(Account account, string profileName, long placeId, int timeoutSeconds, CancellationToken ct, bool mayClearCache = true)
         {
             AccountLaunchResult result = new AccountLaunchResult();
             lock (_launchLock)
             {
+                Process starter = null;
                 try
                 {
-                    if (RobloxProcesses.EndIdleTrayClients() > 0)
+                    if (ct.IsCancellationRequested)
+                    {
+                        result.Outcome = LaunchOutcome.Cancelled;
+                        return result;
+                    }
+                    List<int> protectedPids = TrackedPids();
+                    if (RobloxProcesses.EndIdleTrayClients(protectedPids) > 0)
                     {
                         LogMessage("Ended idle Roblox tray client(s) so the launch gets its own process");
                     }
                     HashSet<int> known = new HashSet<int>(RobloxProcesses.GetPids());
-                    foreach (int tracked in TrackedPids())
+                    protectedPids.RemoveAll(delegate(int pid) { return !known.Contains(pid); });
+
+                    string guardError;
+                    if (!PrepareMultiInstance(out guardError))
                     {
-                        known.Add(tracked);
+                        result.Outcome = LaunchOutcome.MultiInstanceFailed;
+                        result.Message = guardError;
+                        return result;
                     }
 
-                    HandleCloser.CloseSingletonsInAllRoblox();
+                    string playerExe = RobloxLocator.FindPlayerExe();
+                    if (string.IsNullOrEmpty(playerExe))
+                    {
+                        result.Outcome = LaunchOutcome.StartFailed;
+                        result.Message = "RobloxPlayerBeta.exe was not found. Install or update Roblox, then retry.";
+                        return result;
+                    }
                     if (mayClearCache && !RobloxProcesses.AnyRunning())
                     {
                         CacheCleaner.ClearCache();
@@ -198,24 +228,19 @@ namespace RbxMulti
                         TicketLauncher.NewBrowserTrackerId(), TicketLauncher.UnixMs(DateTime.UtcNow));
                     try
                     {
-                        ProcessStartInfo psi = new ProcessStartInfo(uri);
-                        psi.UseShellExecute = true;
-                        Process starter = Process.Start(psi);
-                        if (starter != null)
-                        {
-                            starter.Dispose();
-                        }
+                        ProcessStartInfo psi = TicketLauncher.BuildPlayerStartInfo(playerExe, uri);
+                        starter = Process.Start(psi);
+                        if (starter == null) throw new InvalidOperationException();
                     }
                     catch (Exception)
                     {
                         result.Outcome = LaunchOutcome.StartFailed;
-                        result.Message = "Windows could not open the roblox-player link. Is Roblox installed?";
+                        result.Message = "Windows could not start the installed Roblox player. Update Roblox with all games closed, then retry.";
                         return result;
                     }
 
                     DateTime deadline = DateTime.UtcNow.AddSeconds(timeoutSeconds);
-                    int adoptedPid = 0;
-                    DateTime adoptedAt = DateTime.MinValue;
+                    DateTime visibleSince = DateTime.MinValue;
                     while (DateTime.UtcNow < deadline)
                     {
                         if (ct.IsCancellationRequested)
@@ -224,47 +249,40 @@ namespace RbxMulti
                             return result;
                         }
 
-                        if (adoptedPid == 0)
+                        List<int> current = RobloxProcesses.GetPids();
+                        if (protectedPids.Exists(delegate(int existingPid) { return !current.Contains(existingPid); }))
                         {
-                            foreach (int pid in RobloxProcesses.GetPids())
-                            {
-                                if (known.Contains(pid))
-                                {
-                                    continue;
-                                }
-                                known.Add(pid);
-                                RobloxInstance inst = Adopt(pid, false, profileName, account.Username);
-                                if (inst != null && adoptedPid == 0)
-                                {
-                                    adoptedPid = pid;
-                                    adoptedAt = DateTime.UtcNow;
-                                    lock (_syncLock)
-                                    {
-                                        _accountPids[account.Id] = pid;
-                                    }
-                                }
-                            }
+                            result.Outcome = LaunchOutcome.MultiInstanceFailed;
+                            result.Message = "An existing Roblox client exited during this launch. "
+                                + "Update Roblox once with all games closed, then retry the profile.";
+                            return result;
+                        }
+                        if (starter.HasExited)
+                        {
+                            result.Outcome = LaunchOutcome.MultiInstanceFailed;
+                            result.Message = "Roblox exited before its account window was ready. "
+                                + "Update Roblox once with all games closed, then retry the profile.";
+                            return result;
                         }
 
-                        if (adoptedPid != 0)
+                        // Only adopt the player we started for this ticket, never an unrelated
+                        // client or updater that happens to appear during the same polling window.
+                        int pid = starter.Id;
+                        if (WindowManager.FindWindowForPid(pid, 0) == IntPtr.Zero)
                         {
-                            bool closed = false;
-                            try
+                            visibleSince = DateTime.MinValue;
+                        }
+                        else if (visibleSince == DateTime.MinValue)
+                        {
+                            visibleSince = DateTime.UtcNow;
+                        }
+                        else if ((DateTime.UtcNow - visibleSince).TotalSeconds >= 2)
+                        {
+                            RobloxInstance inst = Adopt(pid, false, profileName, account.Username);
+                            if (inst != null)
                             {
-                                closed = HandleCloser.CloseSingletons(adoptedPid) > 0;
-                            }
-                            catch
-                            {
-                            }
-                            if (closed)
-                            {
-                                LogMessage("Closed singleton handle of new client (PID " + adoptedPid + ")");
-                                result.Outcome = LaunchOutcome.Ok;
-                                return result;
-                            }
-                            if ((DateTime.UtcNow - adoptedAt).TotalSeconds > 10)
-                            {
-                                LogMessage("Warning: no singleton handle found for PID " + adoptedPid + " within 10s");
+                                lock (_syncLock) { _accountPids[account.Id] = pid; }
+                                LogMessage("New account client ready (PID " + pid + ", multi-instance guards held)");
                                 result.Outcome = LaunchOutcome.Ok;
                                 return result;
                             }
@@ -281,6 +299,10 @@ namespace RbxMulti
                     result.Outcome = LaunchOutcome.StartFailed;
                     result.Message = ex.GetType().Name;
                     return result;
+                }
+                finally
+                {
+                    if (starter != null) starter.Dispose();
                 }
             }
         }
@@ -382,7 +404,6 @@ namespace RbxMulti
             DateTime deadline = DateTime.UtcNow.AddSeconds(WatchSeconds);
             DateTime lastAdopt = DateTime.MinValue;
             int adoptedCount = 0;
-            Dictionary<int, DateTime> pending = new Dictionary<int, DateTime>();
 
             try
             {
@@ -394,41 +415,16 @@ namespace RbxMulti
                         {
                             continue;
                         }
+                        if (WindowManager.FindWindowForPid(pid, 0) == IntPtr.Zero) continue;
                         known.Add(pid);
                         if (Adopt(pid, false, profile) != null)
                         {
                             adoptedCount++;
                             lastAdopt = DateTime.UtcNow;
-                            pending[pid] = DateTime.UtcNow;
                         }
                     }
 
-                    foreach (int pid in new List<int>(pending.Keys))
-                    {
-                        bool done = false;
-                        try
-                        {
-                            if (HandleCloser.CloseSingletons(pid) > 0)
-                            {
-                                LogMessage("Closed singleton handle of new client (PID " + pid + ")");
-                                done = true;
-                            }
-                        }
-                        catch
-                        {
-                        }
-                        if (!done && (DateTime.UtcNow - pending[pid]).TotalSeconds > 10)
-                        {
-                            LogMessage("Warning: no singleton handle found for PID " + pid + " within 10s");
-                            done = true;
-                        }
-                        if (done)
-                        {
-                            pending.Remove(pid);
-                        }
-                    }
-
-                    if (adoptedCount > 0 && pending.Count == 0
+                    if (adoptedCount > 0
                         && (DateTime.UtcNow - lastAdopt).TotalSeconds > SettleSeconds)
                     {
                         break;
@@ -689,14 +685,16 @@ namespace RbxMulti
         /// client whose window was closed stays resident). A new roblox-player launch is handed to that
         /// resident process instead of starting a second client, so only one game ever runs. Ends every
         /// RobloxPlayerBeta without a visible window that either carries --launch-to-tray or is over a
-        /// minute old, so the next launch starts its own process. Returns how many were ended. Never throws.
+        /// minute old, so the next launch starts its own process. Tracked game clients are protected
+        /// even while hidden or still loading. Returns how many were ended. Never throws.
         /// </summary>
-        public static int EndIdleTrayClients()
+        public static int EndIdleTrayClients(IEnumerable<int> protectedPids)
         {
             int ended = 0;
             try
             {
                 HashSet<int> visible = PidsWithVisibleWindow();
+                HashSet<int> protectedSet = new HashSet<int>(protectedPids);
                 Dictionary<int, string> commandLines = new Dictionary<int, string>();
                 try
                 {
@@ -719,7 +717,7 @@ namespace RbxMulti
                 {
                     try
                     {
-                        if (visible.Contains(p.Id))
+                        if (protectedSet.Contains(p.Id) || visible.Contains(p.Id))
                         {
                             continue;
                         }

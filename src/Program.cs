@@ -63,6 +63,7 @@ namespace RbxMulti
             }
             finally
             {
+                MultiInstanceGuard.Shared.Dispose();
                 if (mtx != null)
                 {
                     try { mtx.ReleaseMutex(); } catch (ApplicationException) { }
